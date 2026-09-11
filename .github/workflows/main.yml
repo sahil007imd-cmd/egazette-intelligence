@@ -12,3 +12,7 @@ jobs:
     steps:
       - name: Test Run
         run: echo "eGazette monitor started"
+    steps:
+      - name: Test Run
+        run: |
+          python -c "print('Hello from eGazette Monitor')"
