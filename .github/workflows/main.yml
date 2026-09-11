@@ -5,24 +5,33 @@ on:
   schedule:
     - cron: '0 * * * *'
 
+permissions:
+  contents: write
+
 jobs:
   monitor:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Install Python packages
         run: python -m pip install requests beautifulsoup4
 
-      - name: Fetch and extract eGazette records
+      - name: Check new eGazette records
         run: |
           python - <<'PY'
+          import json
           import re
           import requests
           import urllib3
           from bs4 import BeautifulSoup
-          from urllib.parse import urljoin
 
           urllib3.disable_warnings()
+
+          source_link = "https://egazette.gov.in/RecentUploads.aspx?Category=6"
+          state_file = "seen_gazette_ids.json"
 
           session = requests.Session()
           session.headers.update({
@@ -45,8 +54,7 @@ jobs:
           if not match:
               raise RuntimeError("eGazette session URL was not generated.")
 
-          session_base = match.group(0)
-          recent_url = session_base + "/RecentUploads.aspx?Category=6"
+          recent_url = match.group(0) + "/RecentUploads.aspx?Category=6"
 
           response = session.get(
               recent_url,
@@ -56,52 +64,122 @@ jobs:
               allow_redirects=True
           )
 
-          if response.status_code != 200:
-              raise RuntimeError(
-                  f"Recent Uploads request failed: {response.status_code}"
-              )
-
-          if "error.aspx" in response.url.lower():
-              raise RuntimeError("eGazette redirected to error.aspx.")
+          if response.status_code != 200 or "error.aspx" in response.url.lower():
+              raise RuntimeError("Could not retrieve eGazette Recent Uploads page.")
 
           soup = BeautifulSoup(response.text, "html.parser")
-          extracted = []
+          records = []
 
           for row in soup.find_all("tr"):
               cells = [
                   cell.get_text(" ", strip=True)
-                  for cell in row.find_all(["td", "th"])
+                  for cell in row.find_all("td", recursive=False)
               ]
 
-              if not cells:
+              if len(cells) < 10:
                   continue
 
-              links = []
-              for anchor in row.find_all("a", href=True):
-                  href = urljoin(response.url, anchor["href"])
-                  links.append(href)
+              gazette_number = cells[8].strip()
 
-              extracted.append({
-                  "cells": cells,
-                  "links": links
+              if not re.match(r"^[A-Z]{2}-[A-Z]{2}-E-\d{8}-\d+$", gazette_number):
+                  continue
+
+              ministry = cells[1].strip()
+              title = cells[4].strip()
+
+              relevance_text = f"{ministry} {title}".lower()
+
+              automobile_keywords = [
+                  "road transport",
+                  "motor vehicle",
+                  "automobile",
+                  "automotive",
+                  "vehicle",
+                  "cmvr",
+                  "ais",
+                  "fuel",
+                  "petrol",
+                  "diesel",
+                  "ethanol",
+                  "biofuel",
+                  "cbg",
+                  "hydrogen",
+                  "electric vehicle",
+                  "battery",
+                  "emission",
+                  "transport",
+                  "highway",
+                  "user fee",
+                  "petroleum",
+                  "manufacturing",
+                  "auto component"
+              ]
+
+              relevant = "Yes" if any(
+                  keyword in relevance_text
+                  for keyword in automobile_keywords
+              ) else "No"
+
+              records.append({
+                  "gazette_number": gazette_number,
+                  "ministry": ministry,
+                  "title": title,
+                  "relevant": relevant,
+                  "source_link": source_link
               })
 
-          print("Recent uploads URL:", response.url)
-          print("HTML length:", len(response.text))
-          print("Table rows found:", len(extracted))
+          try:
+              with open(state_file, "r", encoding="utf-8") as file:
+                  seen_ids = set(json.load(file))
+          except FileNotFoundError:
+              seen_ids = set()
+
+          new_records = [
+              record for record in records
+              if record["gazette_number"] not in seen_ids
+          ]
+
+          if not new_records:
+              output = "Nothing New"
+          else:
+              lines = [
+                  "S.No. | Gazette No. | Relevant to Automobile Industry | Title | Source Link"
+              ]
+
+              for serial, record in enumerate(new_records, start=1):
+                  lines.append(
+                      f'{serial} | '
+                      f'{record["gazette_number"]} | '
+                      f'{record["relevant"]} | '
+                      f'{record["title"]} | '
+                      f'{record["source_link"]}'
+                  )
+
+              output = "\n".join(lines)
+
           print("")
-          print("========== EXTRACTED ROWS ==========")
+          print("========== HOURLY eGAZETTE UPDATE ==========")
+          print(output)
+          print("============================================")
 
-          for serial, record in enumerate(extracted, start=1):
-              print(f"ROW {serial}")
-              print(" | ".join(record["cells"]))
+          with open("egazette_update.txt", "w", encoding="utf-8") as file:
+              file.write(output)
 
-              for link in record["links"]:
-                  print("LINK:", link)
+          all_ids = sorted(
+              seen_ids.union(
+                  record["gazette_number"] for record in records
+              )
+          )
 
-              print("-----------------------------------")
-
-          if not extracted:
-              raise RuntimeError("No table rows were extracted.")
+          with open(state_file, "w", encoding="utf-8") as file:
+              json.dump(all_ids, file, indent=2)
           PY
+
+      - name: Save processed Gazette IDs
+        run: |
+          git config user.name "eGazette Monitor"
+          git config user.email "actions@github.com"
+          git add seen_gazette_ids.json egazette_update.txt
+          git diff --cached --quiet || git commit -m "Update processed Gazette IDs"
+          git push
           
