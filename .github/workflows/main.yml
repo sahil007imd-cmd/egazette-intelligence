@@ -10,5 +10,21 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Test Run
-        run: python -c "print('Hello from eGazette Monitor')"
+      - name: Fetch eGazette page
+        run: |
+          python - <<'PY'
+          import urllib.request
+
+          url = "https://egazette.gov.in/RecentUploads.aspx?Category=6"
+          request = urllib.request.Request(
+              url,
+              headers={"User-Agent": "Mozilla/5.0"}
+          )
+
+          with urllib.request.urlopen(request, timeout=30) as response:
+              html = response.read().decode("utf-8", errors="replace")
+              print("Final URL:", response.geturl())
+              print("Status:", response.status)
+              print("HTML length:", len(html))
+              print(html[:1000])
+          PY
