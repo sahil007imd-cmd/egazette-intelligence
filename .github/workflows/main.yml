@@ -1,0 +1,14 @@
+name: eGazette Monitor
+
+on:
+schedule:
+- cron: '0 * * * *'
+workflow_dispatch:
+
+jobs:
+monitor:
+runs-on: ubuntu-latest
+
+steps:
+- name: Test Run
+run: echo "eGazette monitor started"
