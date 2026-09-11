@@ -11,31 +11,60 @@ jobs:
 
     steps:
       - name: Install Python packages
-        run: |
-          python -m pip install requests
+        run: python -m pip install requests
 
-      - name: Fetch eGazette page
+      - name: Fetch eGazette page with session
         run: |
           python - <<'PY'
+          import re
           import requests
           import urllib3
 
           urllib3.disable_warnings()
 
-          url = "https://egazette.gov.in/RecentUploads.aspx?Category=6"
+          session = requests.Session()
+          session.headers.update({
+              "User-Agent": "Mozilla/5.0",
+              "Accept": "text/html,application/xhtml+xml"
+          })
 
-          response = requests.get(
-              url,
-              headers={
-                  "User-Agent": "Mozilla/5.0"
-              },
+          home_response = session.get(
+              "https://egazette.gov.in/",
               verify=False,
-              allow_redirects=True,
-              timeout=30
+              timeout=30,
+              allow_redirects=True
           )
 
-          print("Final URL:", response.url)
-          print("Status:", response.status_code)
-          print("HTML length:", len(response.text))
-          print(response.text[:5000])
+          print("Homepage URL:", home_response.url)
+          print("Homepage status:", home_response.status_code)
+
+          match = re.search(r"https://egazette\.gov\.in/\(S\([^)]+\)\)", home_response.url)
+
+          if not match:
+              raise RuntimeError("eGazette session URL was not generated.")
+
+          session_base = match.group(0)
+
+          recent_url = session_base + "/RecentUploads.aspx?Category=6"
+
+          recent_response = session.get(
+              recent_url,
+              headers={"Referer": home_response.url},
+              verify=False,
+              timeout=30,
+              allow_redirects=True
+          )
+
+          print("Recent uploads URL:", recent_response.url)
+          print("Status:", recent_response.status_code)
+          print("HTML length:", len(recent_response.text))
+
+          if "error.aspx" in recent_response.url.lower():
+              raise RuntimeError("eGazette redirected the request to error.aspx.")
+
+          with open("egazette.html", "w", encoding="utf-8") as file:
+              file.write(recent_response.text)
+
+          print(recent_response.text[:3000])
           PY
+          
