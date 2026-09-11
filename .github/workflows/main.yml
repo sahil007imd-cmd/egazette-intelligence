@@ -10,29 +10,32 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Install Python packages
+        run: |
+          python -m pip install requests
+
       - name: Fetch eGazette page
         run: |
           python - <<'PY'
-          import ssl
-          import urllib.request
+          import requests
+          import urllib3
+
+          urllib3.disable_warnings()
 
           url = "https://egazette.gov.in/RecentUploads.aspx?Category=6"
 
-          request = urllib.request.Request(
+          response = requests.get(
               url,
-              headers={"User-Agent": "Mozilla/5.0"}
+              headers={
+                  "User-Agent": "Mozilla/5.0"
+              },
+              verify=False,
+              allow_redirects=True,
+              timeout=30
           )
 
-          context = ssl._create_unverified_context()
-
-          with urllib.request.urlopen(
-              request,
-              timeout=30,
-              context=context
-          ) as response:
-              html = response.read().decode("utf-8", errors="replace")
-              print("Final URL:", response.geturl())
-              print("Status:", response.status)
-              print("HTML length:", len(html))
-              print(html[:1000])
+          print("Final URL:", response.url)
+          print("Status:", response.status_code)
+          print("HTML length:", len(response.text))
+          print(response.text[:5000])
           PY
