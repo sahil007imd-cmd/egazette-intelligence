@@ -1,9 +1,9 @@
 name: eGazette Monitor
 
 on:
+  workflow_dispatch:
   schedule:
     - cron: '0 * * * *'
-  workflow_dispatch:
 
 jobs:
   monitor:
@@ -11,8 +11,4 @@ jobs:
 
     steps:
       - name: Test Run
-        run: echo "eGazette monitor started"
-    steps:
-      - name: Test Run
-        run: |
-          python -c "print('Hello from eGazette Monitor')"
+        run: python -c "print('Hello from eGazette Monitor')"
