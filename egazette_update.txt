@@ -1,12 +1,2 @@
 S.No. | Gazette No. | Relevant to Automobile Industry | Title | Source Link
-1 | CG-DL-E-12092026-276142 | Yes | Publication of user fee notification | https://egazette.gov.in/RecentUploads.aspx?Category=6
-2 | CG-DL-E-12092026-276141 | No | Resignation of Dr Dinesh Sharma, MP | https://egazette.gov.in/RecentUploads.aspx?Category=6
-3 | SG-DL-E-12092026-276140 | No | Appointment of Sh. Akhand Pratap Singh, as Special Public Prosecutor to represent the State | https://egazette.gov.in/RecentUploads.aspx?Category=6
-4 | SG-DL-E-12092026-276139 | No | Appointment of Sh. Prashant Prakash Advocate, as Special Public Prosecutor to represent the State | https://egazette.gov.in/RecentUploads.aspx?Category=6
-5 | CG-DL-E-12092026-276137 | No | Jabalpur | https://egazette.gov.in/RecentUploads.aspx?Category=6
-6 | CG-DL-E-12092026-276136 | Yes | Publication of notification under Section 3A | https://egazette.gov.in/RecentUploads.aspx?Category=6
-7 | CG-DL-E-12092026-276135 | Yes | Publication of notification under Section 3A | https://egazette.gov.in/RecentUploads.aspx?Category=6
-8 | CG-AP-E-12092026-276134 | No | South Coast Railway Publication of notification under section 20E of the Railway Act 1989 Acquisition of land for Construction of Road Over Bridge in lieu of closing of manned LC No ML 341 at Km 641/17 19 between Jadupudi(JPI) Sompeta(SPT) Stations under Visakhapatnam Division (Erstwhile Khurda Road Division) | https://egazette.gov.in/RecentUploads.aspx?Category=6
-9 | CG-DL-E-12092026-276133 | Yes | Publication of notification under Section 3A | https://egazette.gov.in/RecentUploads.aspx?Category=6
-10 | CG-DL-E-12092026-276132 | Yes | Publication of a notification under Section 3(1) of the Petroleum and Minerals Pipelines Act 1962 regarding Declaration of intension to acquire the Right of User in Land for Laying of Silchar Panisagar Mainline Section of Northeast Gas Grid (NEGG) Natural Gas Pipeline in the State of Assam | https://egazette.gov.in/RecentUploads.aspx?Category=6
-11 | CG-DL-E-12092026-276131 | Yes | Publication of notification under Section 3A | https://egazette.gov.in/RecentUploads.aspx?Category=6
+1 | CG-DL-E-12092026-276130 | Yes | Publication of notification under Section 3A | https://egazette.gov.in/RecentUploads.aspx?Category=6
