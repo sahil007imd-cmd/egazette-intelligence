@@ -1,4 +1,4 @@
-name: eGazette Monitor
+name: eGazette PDF AI Test
 
 on:
   workflow_dispatch:
