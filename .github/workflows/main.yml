@@ -104,7 +104,12 @@ jobs:
 
           soup = BeautifulSoup(recent_response.text, "html.parser")
           records = []
-
+          for row in soup.find_all("tr"):
+              if re.search(r"[A-Z]{2}-[A-Z]{2}-E-\d{8}-\d+", row.get_text(" ", strip=True)):
+                  print("========== PDF LINK TEST ==========")
+                  print(row.prettify())
+              break
+        
           for row in soup.find_all("tr"):
               cells = [
                   cell.get_text(" ", strip=True)
