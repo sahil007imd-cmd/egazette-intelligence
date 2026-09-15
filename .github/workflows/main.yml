@@ -103,15 +103,12 @@ jobs:
               raise RuntimeError("eGazette redirected to error.aspx.")
 
           soup = BeautifulSoup(recent_response.text, "html.parser")
+          print("========= PDF LINK TEST =========")
+          print(soup.find_all("a", href=True)[:20])
+          raise RuntimeError("TEST COMPLETE")
+          
           records = []
-          for row in soup.find_all("tr"):
-            cells = row.find_all("td", recursive=False)
-
-            if len(cells) >= 10:
-              print("========== PDF LINK TEST ==========")
-              print(row.prettify())
-              break
-        
+          
           for row in soup.find_all("tr"):
               cells = [
                   cell.get_text(" ", strip=True)
