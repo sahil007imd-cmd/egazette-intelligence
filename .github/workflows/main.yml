@@ -71,7 +71,7 @@ jobs:
           home_response = session.get(
               "https://egazette.gov.in/",
               verify=False,
-              timeout=30,
+              timeout=120,
               allow_redirects=True
           )
 
@@ -90,7 +90,7 @@ jobs:
               recent_url,
               headers={"Referer": home_response.url},
               verify=False,
-              timeout=30,
+              timeout=120,
               allow_redirects=True
           )
 
