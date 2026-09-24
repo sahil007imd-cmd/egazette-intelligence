@@ -1,4 +1,4 @@
-name: eGazette PDF Download Test V2
+name: eGazette Playwright PDF Test
 
 on:
   workflow_dispatch:
@@ -7,682 +7,605 @@ permissions:
   contents: read
 
 jobs:
-  pdf-download-test:
+  pdf-browser-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Install Python packages
         run: |
           python -m pip install --upgrade pip
-          python -m pip install requests beautifulsoup4
+          python -m pip install playwright
 
-      - name: Test eGazette PDF download
+      - name: Install Chromium browser
+        run: |
+          python -m playwright install --with-deps chromium
+
+      - name: Open eGazette and download first PDF
         run: |
           python - <<'PY'
+          import os
           import re
           import time
-          import requests
-          import urllib3
 
-          from bs4 import BeautifulSoup
-          from urllib.parse import urljoin
-          from requests.adapters import HTTPAdapter
-          from urllib3.util.retry import Retry
-
-          urllib3.disable_warnings()
-
-          REQUEST_TIMEOUT = 120
+          from pathlib import Path
+          from playwright.sync_api import (
+              TimeoutError as PlaywrightTimeoutError,
+              sync_playwright
+          )
 
           HOME_URL = "https://egazette.gov.in/"
-
-          PDF_OUTPUT_FILE = "first_gazette_test.pdf"
-
-          DIAGNOSTIC_FILE = "pdf_download_response.html"
-
-          session = requests.Session()
-
-          retry_strategy = Retry(
-              total=3,
-              connect=3,
-              read=3,
-              backoff_factor=3,
-              status_forcelist=[
-                  429,
-                  500,
-                  502,
-                  503,
-                  504
-              ],
-              allowed_methods=[
-                  "GET"
-              ]
-          )
-
-          adapter = HTTPAdapter(
-              max_retries=retry_strategy
-          )
-
-          session.mount(
-              "https://",
-              adapter
-          )
-
-          session.mount(
-              "http://",
-              adapter
-          )
-
-          session.headers.update({
-              "User-Agent": (
-                  "Mozilla/5.0 "
-                  "(Windows NT 10.0; Win64; x64) "
-                  "AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) "
-                  "Chrome/140.0.0.0 "
-                  "Safari/537.36 "
-                  "Edg/140.0.0.0"
-              ),
-              "Accept": (
-                  "text/html,"
-                  "application/xhtml+xml,"
-                  "application/xml;q=0.9,"
-                  "image/avif,"
-                  "image/webp,"
-                  "image/apng,"
-                  "*/*;q=0.8"
-              ),
-              "Accept-Language": (
-                  "en-US,en;q=0.9"
-              ),
-              "Cache-Control": "no-cache",
-              "Pragma": "no-cache",
-              "Upgrade-Insecure-Requests": "1"
-          })
+          OUTPUT_FILE = Path("first_gazette_playwright_test.pdf")
+          SCREENSHOT_FILE = Path("egazette_playwright_screen.png")
+          PAGE_HTML_FILE = Path("egazette_playwright_page.html")
 
           print("")
-          print("======================================")
-          print("OPENING EGAZETTE")
-          print("======================================")
+          print("========================================")
+          print("EGAZETTE PLAYWRIGHT PDF DOWNLOAD TEST")
+          print("========================================")
 
-          home_response = session.get(
-              HOME_URL,
-              verify=False,
-              timeout=REQUEST_TIMEOUT,
-              allow_redirects=True
-          )
+          with sync_playwright() as playwright:
+              browser = playwright.chromium.launch(
+                  headless=True,
+                  args=[
+                      "--disable-dev-shm-usage",
+                      "--no-sandbox",
+                      "--disable-blink-features=AutomationControlled"
+                  ]
+              )
 
-          home_response.raise_for_status()
+              context = browser.new_context(
+                  accept_downloads=True,
+                  ignore_https_errors=True,
+                  viewport={
+                      "width": 1600,
+                      "height": 1000
+                  },
+                  user_agent=(
+                      "Mozilla/5.0 "
+                      "(Windows NT 10.0; Win64; x64) "
+                      "AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) "
+                      "Chrome/140.0.0.0 "
+                      "Safari/537.36 "
+                      "Edg/140.0.0.0"
+                  ),
+                  locale="en-US"
+              )
 
-          print(
-              "Home status:",
-              home_response.status_code
-          )
+              page = context.new_page()
 
-          print(
-              "Home final URL:",
-              home_response.url
-          )
+              page.set_default_timeout(120000)
+              page.set_default_navigation_timeout(120000)
 
-          session_match = re.search(
-              r"https://egazette\.gov\.in/"
-              r"\(S\([^)]+\)\)",
-              home_response.url,
-              re.IGNORECASE
-          )
+              print("Opening eGazette home page...")
 
-          if not session_match:
+              home_response = page.goto(
+                  HOME_URL,
+                  wait_until="domcontentloaded",
+                  timeout=120000
+              )
+
+              if home_response:
+                  print(
+                      "Home status:",
+                      home_response.status
+                  )
+
+              print(
+                  "Home final URL:",
+                  page.url
+              )
+
+              page.wait_for_timeout(3000)
+
               session_match = re.search(
                   r"https://egazette\.gov\.in/"
                   r"\(S\([^)]+\)\)",
-                  home_response.text,
+                  page.url,
                   re.IGNORECASE
               )
 
-          if not session_match:
-              raise RuntimeError(
-                  "eGazette session URL was not generated."
-              )
+              if session_match:
+                  session_base = session_match.group(0)
+              else:
+                  page_content = page.content()
 
-          session_base = session_match.group(0)
-
-          recent_url = (
-              session_base
-              + "/RecentUploads.aspx?Category=6"
-          )
-
-          print("")
-          print(
-              "Recent Uploads URL:",
-              recent_url
-          )
-
-          time.sleep(2)
-
-          recent_response = session.get(
-              recent_url,
-              headers={
-                  "Referer": home_response.url
-              },
-              verify=False,
-              timeout=REQUEST_TIMEOUT,
-              allow_redirects=True
-          )
-
-          recent_response.raise_for_status()
-
-          print(
-              "Recent Uploads status:",
-              recent_response.status_code
-          )
-
-          print(
-              "Recent Uploads final URL:",
-              recent_response.url
-          )
-
-          if "error.aspx" in recent_response.url.lower():
-              raise RuntimeError(
-                  "eGazette redirected to error.aspx."
-              )
-
-          soup = BeautifulSoup(
-              recent_response.text,
-              "html.parser"
-          )
-
-          pdf_button = soup.find(
-              "input",
-              {
-                  "name": re.compile(
-                      r"imgbtndownload",
+                  session_match = re.search(
+                      r"https://egazette\.gov\.in/"
+                      r"\(S\([^)]+\)\)",
+                      page_content,
                       re.IGNORECASE
                   )
-              }
-          )
 
-          if not pdf_button:
-              raise RuntimeError(
-                  "PDF download button was not found."
-              )
-
-          gazette_row = pdf_button.find_parent(
-              "tr"
-          )
-
-          if not gazette_row:
-              raise RuntimeError(
-                  "Gazette row was not found."
-              )
-
-          cells = [
-              cell.get_text(
-                  " ",
-                  strip=True
-              )
-              for cell in gazette_row.find_all(
-                  "td",
-                  recursive=False
-              )
-          ]
-
-          ministry = (
-              cells[1]
-              if len(cells) > 1
-              else ""
-          )
-
-          department = (
-              cells[2]
-              if len(cells) > 2
-              else ""
-          )
-
-          title = (
-              cells[4]
-              if len(cells) > 4
-              else ""
-          )
-
-          issue_date = (
-              cells[6]
-              if len(cells) > 6
-              else ""
-          )
-
-          publish_date = (
-              cells[7]
-              if len(cells) > 7
-              else ""
-          )
-
-          gazette_number = (
-              cells[8]
-              if len(cells) > 8
-              else ""
-          )
-
-          button_name = pdf_button.get(
-              "name",
-              ""
-          )
-
-          print("")
-          print("======================================")
-          print("SELECTED GAZETTE")
-          print("======================================")
-          print("Ministry:", ministry)
-          print("Department:", department)
-          print("Title:", title)
-          print("Issue date:", issue_date)
-          print("Publish date:", publish_date)
-          print("Gazette No.:", gazette_number)
-          print("Button name:", button_name)
-          print("======================================")
-
-          if not button_name:
-              raise RuntimeError(
-                  "PDF button name was not found."
-              )
-
-          form = pdf_button.find_parent(
-              "form"
-          )
-
-          if not form:
-              raise RuntimeError(
-                  "ASP.NET form was not found."
-              )
-
-          post_data = {}
-
-          # Preserve all standard successful form controls.
-          for input_field in form.find_all(
-              "input"
-          ):
-              field_name = input_field.get(
-                  "name"
-              )
-
-              if not field_name:
-                  continue
-
-              field_type = input_field.get(
-                  "type",
-                  "text"
-              ).strip().lower()
-
-              if field_type in [
-                  "submit",
-                  "button",
-                  "reset",
-                  "file",
-                  "image"
-              ]:
-                  continue
-
-              if field_type in [
-                  "checkbox",
-                  "radio"
-              ]:
-                  if not input_field.has_attr(
-                      "checked"
-                  ):
-                      continue
-
-              post_data[field_name] = (
-                  input_field.get(
-                      "value",
-                      ""
-                  )
-              )
-
-          # Preserve text-area values.
-          for textarea in form.find_all(
-              "textarea"
-          ):
-              field_name = textarea.get(
-                  "name"
-              )
-
-              if field_name:
-                  post_data[field_name] = (
-                      textarea.get_text()
-                  )
-
-          # Preserve selected drop-down values.
-          for select in form.find_all(
-              "select"
-          ):
-              field_name = select.get(
-                  "name"
-              )
-
-              if not field_name:
-                  continue
-
-              selected_options = (
-                  select.find_all(
-                      "option",
-                      selected=True
-                  )
-              )
-
-              if not selected_options:
-                  first_option = select.find(
-                      "option"
-                  )
-
-                  if first_option:
-                      selected_options = [
-                          first_option
-                      ]
-
-              if selected_options:
-                  post_data[field_name] = (
-                      selected_options[0].get(
-                          "value",
-                          selected_options[0]
-                          .get_text(
-                              " ",
-                              strip=True
-                          )
+                  if not session_match:
+                      raise RuntimeError(
+                          "eGazette session URL was not generated."
                       )
-                  )
 
-          # Do not replace ASP.NET event fields.
-          # Preserve exactly what came from the page.
-          if "__EVENTTARGET" not in post_data:
-              post_data["__EVENTTARGET"] = ""
+                  session_base = session_match.group(0)
 
-          if "__EVENTARGUMENT" not in post_data:
-              post_data["__EVENTARGUMENT"] = ""
+              recent_url = (
+                  session_base
+                  + "/RecentUploads.aspx?Category=6"
+              )
 
-          # Preserve page-number field found in the browser.
-          if "txtPageNo" not in post_data:
-              post_data["txtPageNo"] = ""
+              print("")
+              print(
+                  "Opening Recent Uploads:",
+                  recent_url
+              )
 
-          # Simulate a genuine click on the ImageButton.
-          post_data[
-              f"{button_name}.x"
-          ] = "7"
+              recent_response = page.goto(
+                  recent_url,
+                  wait_until="domcontentloaded",
+                  timeout=120000
+              )
 
-          post_data[
-              f"{button_name}.y"
-          ] = "9"
-
-          print("")
-          print("======================================")
-          print("ASP.NET FORM CHECK")
-          print("======================================")
-
-          important_fields = [
-              "__EVENTTARGET",
-              "__EVENTARGUMENT",
-              "__VIEWSTATE",
-              "__VIEWSTATEGENERATOR",
-              "__VIEWSTATEENCRYPTED",
-              "__EVENTVALIDATION",
-              "__SCROLLPOSITIONX",
-              "__SCROLLPOSITIONY",
-              "hidden1",
-              "txtPageNo",
-              f"{button_name}.x",
-              f"{button_name}.y"
-          ]
-
-          for field_name in important_fields:
-              if field_name in post_data:
-                  field_value = str(
-                      post_data[field_name]
-                  )
-
-                  if field_name in [
-                      "__VIEWSTATE",
-                      "__EVENTVALIDATION"
-                  ]:
-                      print(
-                          field_name,
-                          "=",
-                          "PRESENT",
-                          f"({len(field_value)} characters)"
-                      )
-                  else:
-                      print(
-                          field_name,
-                          "=",
-                          field_value
-                      )
-              else:
+              if recent_response:
                   print(
-                      field_name,
-                      "=",
-                      "NOT FOUND"
+                      "Recent Uploads status:",
+                      recent_response.status
                   )
 
-          print(
-              "Total submitted fields:",
-              len(post_data)
-          )
-
-          print("======================================")
-
-          form_action = form.get(
-              "action"
-          )
-
-          if form_action:
-              post_url = urljoin(
-                  recent_response.url,
-                  form_action
-              )
-          else:
-              post_url = recent_response.url
-
-          # Ensure Category=6 remains in the POST URL.
-          if "Category=6" not in post_url:
-              separator = (
-                  "&"
-                  if "?" in post_url
-                  else "?"
+              print(
+                  "Recent Uploads final URL:",
+                  page.url
               )
 
-              post_url = (
-                  post_url
-                  + separator
-                  + "Category=6"
+              page.wait_for_timeout(5000)
+
+              page.screenshot(
+                  path=str(SCREENSHOT_FILE),
+                  full_page=True
               )
 
-          print("")
-          print(
-              "Submitting PDF request to:",
-              post_url
-          )
-
-          time.sleep(2)
-
-          pdf_response = session.post(
-              post_url,
-              data=post_data,
-              headers={
-                  "Referer": recent_response.url,
-                  "Origin": "https://egazette.gov.in",
-                  "Content-Type": (
-                      "application/"
-                      "x-www-form-urlencoded"
-                  ),
-                  "Accept": (
-                      "text/html,"
-                      "application/xhtml+xml,"
-                      "application/xml;q=0.9,"
-                      "application/pdf;q=0.9,"
-                      "*/*;q=0.8"
-                  ),
-                  "Sec-Fetch-Dest": "document",
-                  "Sec-Fetch-Mode": "navigate",
-                  "Sec-Fetch-Site": "same-origin",
-                  "Sec-Fetch-User": "?1",
-                  "Upgrade-Insecure-Requests": "1"
-              },
-              verify=False,
-              timeout=REQUEST_TIMEOUT,
-              allow_redirects=True
-          )
-
-          content_type = (
-              pdf_response.headers.get(
-                  "Content-Type",
-                  ""
+              PAGE_HTML_FILE.write_text(
+                  page.content(),
+                  encoding="utf-8"
               )
-          )
 
-          content_disposition = (
-              pdf_response.headers.get(
-                  "Content-Disposition",
-                  ""
-              )
-          )
-
-          content_length = len(
-              pdf_response.content
-          )
-
-          starts_with_pdf = (
-              pdf_response.content[:4]
-              == b"%PDF"
-          )
-
-          is_pdf = (
-              starts_with_pdf
-              or
-              "application/pdf"
-              in content_type.lower()
-          )
-
-          print("")
-          print("======================================")
-          print("PDF DOWNLOAD TEST RESULT")
-          print("======================================")
-          print(
-              "Status:",
-              pdf_response.status_code
-          )
-          print(
-              "Final URL:",
-              pdf_response.url
-          )
-          print(
-              "Content-Type:",
-              content_type
-          )
-          print(
-              "Content-Disposition:",
-              content_disposition
-          )
-          print(
-              "File size:",
-              content_length
-          )
-          print(
-              "Starts with PDF:",
-              starts_with_pdf
-          )
-          print(
-              "Detected as PDF:",
-              is_pdf
-          )
-          print("======================================")
-
-          if is_pdf:
-              with open(
-                  PDF_OUTPUT_FILE,
-                  "wb"
-              ) as pdf_file:
-                  pdf_file.write(
-                      pdf_response.content
+              if "error.aspx" in page.url.lower():
+                  raise RuntimeError(
+                      "eGazette redirected to error.aspx."
                   )
+
+              pdf_buttons = page.locator(
+                  'input[name*="imgbtndownload"]'
+              )
+
+              button_count = pdf_buttons.count()
 
               print("")
               print(
-                  "PDF DOWNLOADED SUCCESSFULLY"
-              )
-              print(
-                  "Saved as:",
-                  PDF_OUTPUT_FILE
+                  "PDF buttons found:",
+                  button_count
               )
 
-          else:
-              with open(
-                  DIAGNOSTIC_FILE,
-                  "wb"
-              ) as diagnostic_file:
-                  diagnostic_file.write(
-                      pdf_response.content
+              if button_count == 0:
+                  raise RuntimeError(
+                      "No PDF download buttons were found."
                   )
 
-              print("")
-              print(
-                  "Response was HTML, not PDF."
+              first_button = pdf_buttons.first
+
+              button_name = first_button.get_attribute(
+                  "name"
               )
 
               print(
-                  "Diagnostic response saved as:",
-                  DIAGNOSTIC_FILE
+                  "Selected button:",
+                  button_name
               )
 
-              response_soup = BeautifulSoup(
-                  pdf_response.content,
-                  "html.parser"
+              gazette_row = first_button.locator(
+                  "xpath=ancestor::tr[1]"
               )
 
-              page_title = (
-                  response_soup.title
-                  .get_text(
-                      " ",
-                      strip=True
+              row_cells = gazette_row.locator(
+                  "td"
+              )
+
+              cell_count = row_cells.count()
+
+              cell_values = []
+
+              for index in range(cell_count):
+                  cell_text = (
+                      row_cells
+                      .nth(index)
+                      .inner_text()
+                      .strip()
                   )
-                  if response_soup.title
+
+                  cell_values.append(
+                      " ".join(cell_text.split())
+                  )
+
+              ministry = (
+                  cell_values[1]
+                  if len(cell_values) > 1
                   else ""
               )
 
-              print(
-                  "Returned page title:",
-                  page_title
+              department = (
+                  cell_values[2]
+                  if len(cell_values) > 2
+                  else ""
               )
 
-              error_text = (
-                  response_soup.get_text(
-                      " ",
-                      strip=True
+              title = (
+                  cell_values[4]
+                  if len(cell_values) > 4
+                  else ""
+              )
+
+              issue_date = (
+                  cell_values[6]
+                  if len(cell_values) > 6
+                  else ""
+              )
+
+              publish_date = (
+                  cell_values[7]
+                  if len(cell_values) > 7
+                  else ""
+              )
+
+              gazette_number = (
+                  cell_values[8]
+                  if len(cell_values) > 8
+                  else ""
+              )
+
+              print("")
+              print("========================================")
+              print("SELECTED GAZETTE")
+              print("========================================")
+              print("Ministry:", ministry)
+              print("Department:", department)
+              print("Title:", title)
+              print("Issue date:", issue_date)
+              print("Publish date:", publish_date)
+              print("Gazette No.:", gazette_number)
+              print("========================================")
+
+              first_button.scroll_into_view_if_needed()
+
+              page.wait_for_timeout(2000)
+
+              download_captured = False
+              popup_captured = False
+
+              print("")
+              print("Clicking the actual PDF icon...")
+
+              # Method 1:
+              # Wait for a standard browser download.
+              try:
+                  with page.expect_download(
+                      timeout=120000
+                  ) as download_info:
+                      first_button.click(
+                          force=True,
+                          timeout=120000
+                      )
+
+                  download = download_info.value
+
+                  download.save_as(
+                      str(OUTPUT_FILE)
                   )
-              )
 
+                  print("")
+                  print(
+                      "Standard browser download captured."
+                  )
+
+                  print(
+                      "Suggested filename:",
+                      download.suggested_filename
+                  )
+
+                  download_captured = True
+
+              except PlaywrightTimeoutError:
+                  print(
+                      "No standard download event detected."
+                  )
+
+              # Method 2:
+              # eGazette may open the PDF in a new tab.
+              if not download_captured:
+                  print(
+                      "Testing for a new browser tab..."
+                  )
+
+                  page.reload(
+                      wait_until="domcontentloaded",
+                      timeout=120000
+                  )
+
+                  page.wait_for_timeout(5000)
+
+                  pdf_buttons = page.locator(
+                      'input[name*="imgbtndownload"]'
+                  )
+
+                  if pdf_buttons.count() == 0:
+                      raise RuntimeError(
+                          "PDF buttons disappeared after page reload."
+                      )
+
+                  first_button = pdf_buttons.first
+
+                  first_button.scroll_into_view_if_needed()
+
+                  try:
+                      with context.expect_page(
+                          timeout=120000
+                      ) as popup_info:
+                          first_button.click(
+                              force=True,
+                              timeout=120000
+                          )
+
+                      popup = popup_info.value
+
+                      popup.wait_for_load_state(
+                          "domcontentloaded",
+                          timeout=120000
+                      )
+
+                      print(
+                          "New tab URL:",
+                          popup.url
+                      )
+
+                      popup_captured = True
+
+                      popup_response = popup.request.get(
+                          popup.url,
+                          timeout=120000
+                      )
+
+                      popup_content = popup_response.body()
+
+                      popup_content_type = (
+                          popup_response.headers.get(
+                              "content-type",
+                              ""
+                          )
+                      )
+
+                      print(
+                          "New tab Content-Type:",
+                          popup_content_type
+                      )
+
+                      print(
+                          "New tab response size:",
+                          len(popup_content)
+                      )
+
+                      starts_with_pdf = (
+                          popup_content[:4] == b"%PDF"
+                      )
+
+                      print(
+                          "New tab starts with PDF:",
+                          starts_with_pdf
+                      )
+
+                      if (
+                          starts_with_pdf
+                          or
+                          "application/pdf"
+                          in popup_content_type.lower()
+                      ):
+                          OUTPUT_FILE.write_bytes(
+                              popup_content
+                          )
+
+                          download_captured = True
+
+                      popup.close()
+
+                  except PlaywrightTimeoutError:
+                      print(
+                          "No new browser tab detected."
+                      )
+
+              # Method 3:
+              # Capture a PDF returned through an HTTP response.
+              if not download_captured:
+                  print(
+                      "Testing for a PDF network response..."
+                  )
+
+                  page.reload(
+                      wait_until="domcontentloaded",
+                      timeout=120000
+                  )
+
+                  page.wait_for_timeout(5000)
+
+                  pdf_buttons = page.locator(
+                      'input[name*="imgbtndownload"]'
+                  )
+
+                  if pdf_buttons.count() == 0:
+                      raise RuntimeError(
+                          "PDF buttons were not found "
+                          "for response test."
+                      )
+
+                  first_button = pdf_buttons.first
+
+                  first_button.scroll_into_view_if_needed()
+
+                  captured_pdf = {
+                      "body": None,
+                      "url": None,
+                      "content_type": None
+                  }
+
+                  def capture_response(response):
+                      try:
+                          content_type = (
+                              response.headers.get(
+                                  "content-type",
+                                  ""
+                              )
+                          )
+
+                          content_disposition = (
+                              response.headers.get(
+                                  "content-disposition",
+                                  ""
+                              )
+                          )
+
+                          if (
+                              "application/pdf"
+                              in content_type.lower()
+                              or
+                              ".pdf"
+                              in content_disposition.lower()
+                          ):
+                              captured_pdf["body"] = (
+                                  response.body()
+                              )
+
+                              captured_pdf["url"] = (
+                                  response.url
+                              )
+
+                              captured_pdf[
+                                  "content_type"
+                              ] = content_type
+
+                      except Exception:
+                          pass
+
+                  page.on(
+                      "response",
+                      capture_response
+                  )
+
+                  first_button.click(
+                      force=True,
+                      timeout=120000
+                  )
+
+                  page.wait_for_timeout(15000)
+
+                  if captured_pdf["body"]:
+                      OUTPUT_FILE.write_bytes(
+                          captured_pdf["body"]
+                      )
+
+                      print(
+                          "PDF response URL:",
+                          captured_pdf["url"]
+                      )
+
+                      print(
+                          "PDF Content-Type:",
+                          captured_pdf["content_type"]
+                      )
+
+                      download_captured = True
+
+              print("")
+              print("========================================")
+              print("PLAYWRIGHT TEST RESULT")
+              print("========================================")
               print(
-                  "Returned text preview:",
-                  error_text[:500]
+                  "Download captured:",
+                  download_captured
+              )
+              print(
+                  "Popup detected:",
+                  popup_captured
+              )
+              print(
+                  "Output exists:",
+                  OUTPUT_FILE.exists()
               )
 
+              if OUTPUT_FILE.exists():
+                  file_size = OUTPUT_FILE.stat().st_size
+                  file_header = OUTPUT_FILE.read_bytes()[:4]
+
+                  print(
+                      "Output file size:",
+                      file_size
+                  )
+
+                  print(
+                      "Starts with PDF:",
+                      file_header == b"%PDF"
+                  )
+              else:
+                  print(
+                      "Output file size:",
+                      0
+                  )
+
+                  print(
+                      "Starts with PDF:",
+                      False
+                  )
+
+              print("========================================")
+
+              browser.close()
+
+          if not OUTPUT_FILE.exists():
               raise RuntimeError(
-                  "The response was not a PDF."
+                  "Browser click completed, but no PDF "
+                  "file was captured."
               )
+
+          pdf_bytes = OUTPUT_FILE.read_bytes()
+
+          if pdf_bytes[:4] != b"%PDF":
+              raise RuntimeError(
+                  "The captured file is not a valid PDF."
+              )
+
+          print("")
+          print("PDF DOWNLOAD SUCCESSFUL")
+          print("Saved as:", OUTPUT_FILE)
+          print("PDF size:", len(pdf_bytes))
           PY
 
       - name: Upload downloaded PDF
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: eGazette-PDF-Test-V2
-          path: first_gazette_test.pdf
+          name: eGazette-Playwright-PDF
+          path: first_gazette_playwright_test.pdf
           retention-days: 3
           if-no-files-found: error
 
-      - name: Upload diagnostic response
+      - name: Upload diagnostic files
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: eGazette-PDF-Diagnostic-V2
-          path: pdf_download_response.html
+          name: eGazette-Playwright-Diagnostic
+          path: |
+            egazette_playwright_screen.png
+            egazette_playwright_page.html
+            first_gazette_playwright_test.pdf
           retention-days: 3
           if-no-files-found: ignore
