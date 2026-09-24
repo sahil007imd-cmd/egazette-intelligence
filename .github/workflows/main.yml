@@ -1,15 +1,19 @@
-name: eGazette Playwright PDF Viewer Test
+name: eGazette Intelligent Email Test
 
 on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: egazette-intelligent-test
+  cancel-in-progress: false
 
 jobs:
-  pdf-browser-test:
+  monitor:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repository
@@ -20,248 +24,576 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install Playwright
+      - name: Install Python packages
         run: |
           python -m pip install --upgrade pip
-          python -m pip install playwright
+          python -m pip install playwright pypdf requests beautifulsoup4
 
       - name: Install Chromium
         run: |
           python -m playwright install --with-deps chromium
 
-      - name: Download Gazette PDF through viewer
+      - name: Process eGazette notifications
+        env:
+          POWER_AUTOMATE_URL: ${{ secrets.POWER_AUTOMATE_URL }}
         run: |
           python - <<'PY'
+          import html
+          import json
+          import os
           import re
+          import shutil
+          from datetime import datetime
           from pathlib import Path
-          from urllib.parse import urljoin, unquote
+          from urllib.parse import unquote, urljoin
 
+          import requests
+          from bs4 import BeautifulSoup
           from playwright.sync_api import (
               TimeoutError as PlaywrightTimeoutError,
               sync_playwright
           )
+          from pypdf import PdfReader
+
+          # -------------------------------------------------
+          # SETTINGS
+          # -------------------------------------------------
 
           HOME_URL = "https://egazette.gov.in/"
+          STATE_FILE = Path("seen_gazette_ids.json")
+          DOWNLOAD_DIR = Path("downloaded_gazettes")
+          DIAGNOSTIC_DIR = Path("diagnostic_files")
 
-          PDF_FILE = Path(
-              "first_gazette_playwright_test.pdf"
-          )
+          MAX_PDFS_PER_RUN = 8
+          MAX_CHARACTERS_PER_PDF = 14000
+          MAX_TOTAL_AI_CHARACTERS = 90000
 
-          MAIN_SCREENSHOT = Path(
-              "egazette_recent_uploads.png"
-          )
+          POWER_AUTOMATE_URL = os.environ.get(
+              "POWER_AUTOMATE_URL",
+              ""
+          ).strip()
 
-          VIEWER_SCREENSHOT = Path(
-              "egazette_pdf_viewer.png"
-          )
-
-          VIEWER_HTML = Path(
-              "egazette_pdf_viewer.html"
-          )
-
-          print("")
-          print("========================================")
-          print("EGAZETTE PDF VIEWER TEST")
-          print("========================================")
-
-          with sync_playwright() as playwright:
-              browser = playwright.chromium.launch(
-                  headless=True,
-                  args=[
-                      "--disable-dev-shm-usage",
-                      "--no-sandbox",
-                      "--disable-http2",
-                      "--disable-blink-features="
-                      "AutomationControlled"
-                  ]
+          if not POWER_AUTOMATE_URL:
+              raise RuntimeError(
+                  "POWER_AUTOMATE_URL secret is missing."
               )
 
-              context = browser.new_context(
-                  accept_downloads=True,
-                  ignore_https_errors=True,
-                  viewport={
-                      "width": 1600,
-                      "height": 1000
-                  },
-                  user_agent=(
-                      "Mozilla/5.0 "
-                      "(Windows NT 10.0; Win64; x64) "
-                      "AppleWebKit/537.36 "
-                      "(KHTML, like Gecko) "
-                      "Chrome/140.0.0.0 "
-                      "Safari/537.36 "
-                      "Edg/140.0.0.0"
-                  ),
-                  locale="en-US"
+          DOWNLOAD_DIR.mkdir(exist_ok=True)
+          DIAGNOSTIC_DIR.mkdir(exist_ok=True)
+
+          # -------------------------------------------------
+          # PRIMARY SCREENING RULES
+          # -------------------------------------------------
+
+          RELEVANT_MINISTRIES = [
+              "road transport",
+              "heavy industries",
+              "heavy industry",
+              "environment forest",
+              "environment, forest",
+              "petroleum and natural gas",
+              "commerce and industry",
+              "commerce & industry",
+              "power",
+              "new and renewable energy",
+              "railways",
+              "finance",
+              "corporate affairs",
+              "electronics and information technology",
+              "skill development",
+              "labour and employment",
+              "consumer affairs",
+              "steel",
+              "mines"
+          ]
+
+          RELEVANT_KEYWORDS = [
+              "motor vehicle",
+              "motor vehicles",
+              "automobile",
+              "automotive",
+              "passenger vehicle",
+              "commercial vehicle",
+              "vehicle safety",
+              "vehicle registration",
+              "vehicle certification",
+              "type approval",
+              "cmvr",
+              "central motor vehicle",
+              "ais ",
+              "automotive industry standard",
+              "bharat ncap",
+              "adas",
+              "road safety",
+              "emission",
+              "bharat stage",
+              "bs vi",
+              "bs6",
+              "cafe",
+              "fuel economy",
+              "electric vehicle",
+              "electric mobility",
+              "charging infrastructure",
+              "battery",
+              "battery swapping",
+              "hybrid vehicle",
+              "strong hybrid",
+              "cng",
+              "bio-cng",
+              "compressed biogas",
+              "cbg",
+              "ethanol",
+              "flex fuel",
+              "biofuel",
+              "hydrogen mobility",
+              "green hydrogen",
+              "petrol",
+              "diesel",
+              "auto component",
+              "semiconductor",
+              "localisation",
+              "localization",
+              "production linked incentive",
+              "pli scheme",
+              "industrial policy",
+              "manufacturing policy",
+              "customs duty",
+              "customs tariff",
+              "import policy",
+              "export policy",
+              "foreign trade policy",
+              "free trade agreement",
+              "fta",
+              "dgft",
+              "logistics",
+              "freight",
+              "pm gati shakti",
+              "scrappage",
+              "vehicle scrapping",
+              "recycling",
+              "extended producer responsibility",
+              "circular economy",
+              "carbon credit",
+              "carbon market",
+              "bis standard",
+              "quality control order",
+              "qco",
+              "testing agency",
+              "testing centre",
+              "government approved test centre"
+          ]
+
+          OFFICIAL_CHANGE_KEYWORDS = [
+              "appointment",
+              "appointed",
+              "transfer",
+              "transferred",
+              "posting",
+              "posted",
+              "additional charge",
+              "assumption of charge",
+              "relinquishment of charge",
+              "retirement",
+              "retired",
+              "secretary",
+              "additional secretary",
+              "joint secretary",
+              "chairperson",
+              "chairman",
+              "director general",
+              "chief executive officer",
+              "member secretary"
+          ]
+
+          ROUTINE_EXCLUSION_KEYWORDS = [
+              "section 3a",
+              "section 3d",
+              "section 20a",
+              "section 20e",
+              "section 20(e)",
+              "declaration of acquisition of land",
+              "land acquisition",
+              "acquisition of land",
+              "competent authority for land acquisition",
+              "village land",
+              "survey number",
+              "toll plaza",
+              "user fee notification",
+              "national highway land"
+          ]
+
+          IMPORTANT_AGENCIES = [
+              "morth",
+              "ministry of road transport",
+              "ministry of heavy industries",
+              "department of heavy industry",
+              "moefcc",
+              "ministry of environment",
+              "ministry of petroleum",
+              "ministry of commerce",
+              "dpiit",
+              "dgft",
+              "bureau of indian standards",
+              "bis",
+              "caqm",
+              "commission for air quality management",
+              "niti aayog",
+              "ministry of power",
+              "ministry of new and renewable energy",
+              "mnre",
+              "ministry of railways"
+          ]
+
+          # -------------------------------------------------
+          # HELPER FUNCTIONS
+          # -------------------------------------------------
+
+          def clean_text(value):
+              return " ".join(
+                  str(value or "").split()
+              ).strip()
+
+          def safe_filename(value):
+              value = re.sub(
+                  r"[^A-Za-z0-9._-]+",
+                  "_",
+                  value
               )
 
-              page = context.new_page()
+              return value.strip("_")[:120]
 
-              page.set_default_timeout(120000)
-              page.set_default_navigation_timeout(120000)
+          def load_seen_ids():
+              try:
+                  with STATE_FILE.open(
+                      "r",
+                      encoding="utf-8"
+                  ) as state_file:
+                      loaded = json.load(state_file)
 
-              print("Opening eGazette home page...")
+                  if isinstance(loaded, list):
+                      return set(
+                          str(item)
+                          for item in loaded
+                      )
 
-              home_response = page.goto(
-                  HOME_URL,
-                  wait_until="domcontentloaded",
-                  timeout=120000
+              except (
+                  FileNotFoundError,
+                  json.JSONDecodeError
+              ):
+                  pass
+
+              return set()
+
+          def save_seen_ids(seen_ids):
+              with STATE_FILE.open(
+                  "w",
+                  encoding="utf-8"
+              ) as state_file:
+                  json.dump(
+                      sorted(seen_ids),
+                      state_file,
+                      indent=2,
+                      ensure_ascii=False
+                  )
+
+          def contains_any(text, values):
+              return any(
+                  value in text
+                  for value in values
               )
 
-              if home_response:
+          def primary_screen(record):
+              ministry = record["ministry"].lower()
+              department = record["department"].lower()
+              title = record["title"].lower()
+
+              combined = clean_text(
+                  f"{ministry} {department} {title}"
+              ).lower()
+
+              relevant_ministry = contains_any(
+                  combined,
+                  RELEVANT_MINISTRIES
+              )
+
+              relevant_subject = contains_any(
+                  combined,
+                  RELEVANT_KEYWORDS
+              )
+
+              official_change = (
+                  contains_any(
+                      combined,
+                      OFFICIAL_CHANGE_KEYWORDS
+                  )
+                  and
+                  contains_any(
+                      combined,
+                      IMPORTANT_AGENCIES
+                  )
+              )
+
+              routine_exclusion = contains_any(
+                  combined,
+                  ROUTINE_EXCLUSION_KEYWORDS
+              )
+
+              # Government-affairs exception:
+              # transfers and appointments in relevant
+              # ministries must still be analysed.
+              if official_change:
+                  return (
+                      True,
+                      "Relevant ministry official change"
+                  )
+
+              # Routine acquisition notices are excluded
+              # unless another strong automotive subject
+              # is clearly present.
+              if routine_exclusion and not relevant_subject:
+                  return (
+                      False,
+                      "Routine land/toll notification"
+                  )
+
+              if relevant_subject:
+                  return (
+                      True,
+                      "Automotive/business keyword match"
+                  )
+
+              if relevant_ministry:
+                  return (
+                      True,
+                      "Relevant ministry review"
+                  )
+
+              return (
+                  False,
+                  "No preliminary automotive relevance"
+              )
+
+          def extract_pdf_text(pdf_path):
+              reader = PdfReader(str(pdf_path))
+
+              extracted_pages = []
+
+              for page_number, page in enumerate(
+                  reader.pages,
+                  start=1
+              ):
+                  try:
+                      page_text = (
+                          page.extract_text() or ""
+                      )
+
+                  except Exception as error:
+                      print(
+                          f"Page {page_number} extraction "
+                          f"warning: {error}"
+                      )
+
+                      page_text = ""
+
+                  page_text = clean_text(page_text)
+
+                  if page_text:
+                      extracted_pages.append(
+                          f"[PAGE {page_number}]\n"
+                          f"{page_text}"
+                      )
+
+              full_text = "\n\n".join(
+                  extracted_pages
+              )
+
+              return full_text[
+                  :MAX_CHARACTERS_PER_PDF
+              ]
+
+          def find_pdf_in_viewer(
+              context,
+              viewer_page,
+              gazette_number
+          ):
+              output_name = (
+                  safe_filename(gazette_number)
+                  + ".pdf"
+              )
+
+              output_path = (
+                  DOWNLOAD_DIR / output_name
+              )
+
+              viewer_page.set_default_timeout(
+                  120000
+              )
+
+              try:
+                  viewer_page.wait_for_load_state(
+                      "domcontentloaded",
+                      timeout=120000
+                  )
+
+              except PlaywrightTimeoutError:
                   print(
-                      "Home status:",
-                      home_response.status
+                      "Viewer load timeout ignored."
                   )
 
-              print(
-                  "Home final URL:",
-                  page.url
+              viewer_page.wait_for_timeout(8000)
+
+              viewer_html = viewer_page.content()
+
+              diagnostic_html = (
+                  DIAGNOSTIC_DIR
+                  / (
+                      safe_filename(gazette_number)
+                      + "_viewer.html"
+                  )
               )
 
-              page.wait_for_timeout(3000)
-
-              session_match = re.search(
-                  r"https://egazette\.gov\.in/"
-                  r"\(S\([^)]+\)\)",
-                  page.url,
-                  re.IGNORECASE
+              diagnostic_html.write_text(
+                  viewer_html,
+                  encoding="utf-8"
               )
 
-              if not session_match:
-                  session_match = re.search(
-                      r"https://egazette\.gov\.in/"
-                      r"\(S\([^)]+\)\)",
-                      page.content(),
-                      re.IGNORECASE
+              candidate_urls = []
+
+              def add_candidate(candidate):
+                  if not candidate:
+                      return
+
+                  candidate = unquote(
+                      str(candidate).strip()
                   )
 
-              if not session_match:
-                  raise RuntimeError(
-                      "eGazette session URL was not generated."
+                  if candidate.startswith(
+                      "javascript:"
+                  ):
+                      return
+
+                  absolute_url = urljoin(
+                      viewer_page.url,
+                      candidate
                   )
 
-              session_base = session_match.group(0)
+                  if absolute_url not in candidate_urls:
+                      candidate_urls.append(
+                          absolute_url
+                      )
 
-              recent_url = (
-                  session_base
-                  + "/RecentUploads.aspx?Category=6"
-              )
+              selectors = [
+                  ("iframe", "src"),
+                  ("embed", "src"),
+                  ("object", "data"),
+                  ("source", "src"),
+                  ("a", "href")
+              ]
 
-              print("")
-              print(
-                  "Opening Recent Uploads:",
-                  recent_url
-              )
-
-              recent_response = page.goto(
-                  recent_url,
-                  referer=page.url,
-                  wait_until="domcontentloaded",
-                  timeout=120000
-              )
-
-              if recent_response:
-                  print(
-                      "Recent Uploads status:",
-                      recent_response.status
+              for selector, attribute in selectors:
+                  elements = viewer_page.locator(
+                      selector
                   )
 
-              print(
-                  "Recent Uploads final URL:",
-                  page.url
-              )
+                  for index in range(
+                      elements.count()
+                  ):
+                      try:
+                          add_candidate(
+                              elements
+                              .nth(index)
+                              .get_attribute(attribute)
+                          )
 
-              if "error.aspx" in page.url.lower():
-                  raise RuntimeError(
-                      "eGazette redirected to error.aspx."
-                  )
+                      except Exception:
+                          pass
 
-              page.wait_for_timeout(5000)
+              for frame in viewer_page.frames:
+                  if (
+                      frame.url
+                      and
+                      frame.url != viewer_page.url
+                  ):
+                      add_candidate(frame.url)
 
-              page.screenshot(
-                  path=str(MAIN_SCREENSHOT),
-                  full_page=True
-              )
+              patterns = [
+                  r"""[^"']+\.pdf(?:\?[^"']*?)["']""",
+                  r"""[^"']*(?:GetPDF|DownloadPDF|ViewFile|DownloadFile[^"']*)["']"""
+              ]
 
-              pdf_buttons = page.locator(
-                  'input[name*="imgbtndownload"]'
-              )
+              for pattern in patterns:
+                  for match in re.findall(
+                      pattern,
+                      viewer_html,
+                      flags=re.IGNORECASE
+                  ):
+                      add_candidate(match)
 
-              button_count = pdf_buttons.count()
+              for candidate_url in candidate_urls:
+                  try:
+                      print(
+                          "Testing PDF candidate:",
+                          candidate_url
+                      )
 
-              print("")
-              print(
-                  "PDF buttons found:",
-                  button_count
-              )
+                      response = context.request.get(
+                          candidate_url,
+                          headers={
+                              "Referer": viewer_page.url
+                          },
+                          timeout=120000,
+                          fail_on_status_code=False
+                      )
 
-              if button_count == 0:
-                  raise RuntimeError(
-                      "No PDF download buttons were found."
-                  )
+                      content_type = (
+                          response.headers.get(
+                              "content-type",
+                              ""
+                          )
+                      )
 
-              selected_button = pdf_buttons.first
+                      body = response.body()
 
-              selected_button.scroll_into_view_if_needed()
+                      is_pdf = (
+                          body[:4] == b"%PDF"
+                          or
+                          "application/pdf"
+                          in content_type.lower()
+                      )
 
-              gazette_row = selected_button.locator(
-                  "xpath=ancestor::tr[1]"
-              )
+                      if is_pdf:
+                          output_path.write_bytes(body)
 
-              row_cells = gazette_row.locator("td")
+                          print(
+                              "PDF saved:",
+                              output_path
+                          )
 
-              cell_values = []
+                          return output_path
 
-              for index in range(row_cells.count()):
-                  value = (
-                      row_cells
-                      .nth(index)
-                      .inner_text()
-                      .strip()
-                  )
+                  except Exception as error:
+                      print(
+                          "PDF candidate warning:",
+                          str(error)
+                      )
 
-                  cell_values.append(
-                      " ".join(value.split())
-                  )
+              return None
 
-              ministry = (
-                  cell_values[1]
-                  if len(cell_values) > 1
-                  else ""
-              )
+          def download_pdf(
+              page,
+              context,
+              button,
+              gazette_number
+          ):
+              captured_pdf = {
+                  "body": None,
+                  "url": ""
+              }
 
-              department = (
-                  cell_values[2]
-                  if len(cell_values) > 2
-                  else ""
-              )
+              def capture_pdf_response(response):
+                  if captured_pdf["body"] is not None:
+                      return
 
-              title = (
-                  cell_values[4]
-                  if len(cell_values) > 4
-                  else ""
-              )
-
-              gazette_number = (
-                  cell_values[8]
-                  if len(cell_values) > 8
-                  else ""
-              )
-
-              print("")
-              print("========================================")
-              print("SELECTED GAZETTE")
-              print("========================================")
-              print("Ministry:", ministry)
-              print("Department:", department)
-              print("Title:", title)
-              print("Gazette No.:", gazette_number)
-              print("========================================")
-
-              viewer_responses = []
-
-              def record_response(response):
                   try:
                       content_type = (
                           response.headers.get(
@@ -277,406 +609,47 @@ jobs:
                           )
                       )
 
-                      response_url = response.url
-
                       if (
                           "application/pdf"
                           in content_type.lower()
                           or
-                          ".pdf" in response_url.lower()
-                          or
                           ".pdf"
                           in content_disposition.lower()
                       ):
-                          viewer_responses.append({
-                              "url": response_url,
-                              "content_type": content_type,
-                              "response": response
-                          })
+                          body = response.body()
 
-                          print(
-                              "Possible PDF response:",
-                              response_url
-                          )
+                          if body[:4] == b"%PDF":
+                              captured_pdf["body"] = body
+                              captured_pdf["url"] = (
+                                  response.url
+                              )
 
-                          print(
-                              "Possible PDF Content-Type:",
-                              content_type
-                          )
-
-                  except Exception as error:
-                      print(
-                          "Response inspection warning:",
-                          str(error)
-                      )
+                  except Exception:
+                      pass
 
               context.on(
                   "response",
-                  record_response
+                  capture_pdf_response
               )
 
-              print("")
-              print("Clicking PDF icon...")
+              button.scroll_into_view_if_needed()
+
+              page.wait_for_timeout(1000)
+
+              viewer_page = None
 
               try:
                   with context.expect_page(
                       timeout=120000
                   ) as popup_info:
-                      selected_button.click(
+                      button.click(
                           force=True,
                           timeout=120000
                       )
 
-                  popup = popup_info.value
+                  viewer_page = popup_info.value
 
               except PlaywrightTimeoutError:
-                  raise RuntimeError(
-                      "The PDF viewer tab did not open."
-                  )
-
-              popup.set_default_timeout(120000)
-
-              try:
-                  popup.wait_for_load_state(
-                      "domcontentloaded",
-                      timeout=120000
-                  )
-              except PlaywrightTimeoutError:
                   print(
-                      "Viewer load-state timeout ignored."
-                  )
-
-              popup.wait_for_timeout(10000)
-
-              print("")
-              print(
-                  "Viewer URL:",
-                  popup.url
-              )
-
-              popup.screenshot(
-                  path=str(VIEWER_SCREENSHOT),
-                  full_page=True
-              )
-
-              viewer_html = popup.content()
-
-              VIEWER_HTML.write_text(
-                  viewer_html,
-                  encoding="utf-8"
-              )
-
-              print(
-                  "Viewer HTML size:",
-                  len(viewer_html)
-              )
-
-              candidate_urls = []
-
-              def add_candidate(candidate):
-                  if not candidate:
-                      return
-
-                  candidate = unquote(
-                      candidate.strip()
-                  )
-
-                  if candidate.startswith(
-                      "javascript:"
-                  ):
-                      return
-
-                  absolute_url = urljoin(
-                      popup.url,
-                      candidate
-                  )
-
-                  if absolute_url not in candidate_urls:
-                      candidate_urls.append(
-                          absolute_url
-                      )
-
-              print("")
-              print("Inspecting viewer elements...")
-
-              selectors_and_attributes = [
-                  ("iframe", "src"),
-                  ("embed", "src"),
-                  ("object", "data"),
-                  ("a", "href"),
-                  ("source", "src")
-              ]
-
-              for selector, attribute in (
-                  selectors_and_attributes
-              ):
-                  elements = popup.locator(selector)
-
-                  count = elements.count()
-
-                  print(
-                      selector,
-                      "elements:",
-                      count
-                  )
-
-                  for index in range(count):
-                      value = (
-                          elements
-                          .nth(index)
-                          .get_attribute(attribute)
-                      )
-
-                      if value:
-                          print(
-                              selector,
-                              attribute,
-                              ":",
-                              value
-                          )
-
-                          add_candidate(value)
-
-              for frame in popup.frames:
-                  if frame.url:
-                      print(
-                          "Frame URL:",
-                          frame.url
-                      )
-
-                      if frame.url != popup.url:
-                          add_candidate(frame.url)
-
-              url_patterns = [
-                  r"""[^"']+\.pdf(?:\?[^"']*?)["']""",
-                  r"""[^"']*ViewPDF[^"']*["']""",
-                  r"""[^"']*Download[^"']*["']""",
-                  r"""[^"']*GetPDF[^"']*["']"""
-              ]
-
-              for pattern in url_patterns:
-                  matches = re.findall(
-                      pattern,
-                      viewer_html,
-                      re.IGNORECASE
-                  )
-
-                  for match in matches:
-                      add_candidate(match)
-
-              print("")
-              print(
-                  "Candidate URLs found:",
-                  len(candidate_urls)
-              )
-
-              pdf_saved = False
-
-              # First try PDF responses already captured
-              # when the viewer opened.
-              for item in viewer_responses:
-                  if pdf_saved:
-                      break
-
-                  try:
-                      response_body = (
-                          item["response"].body()
-                      )
-
-                      if response_body[:4] == b"%PDF":
-                          PDF_FILE.write_bytes(
-                              response_body
-                          )
-
-                          print(
-                              "PDF saved from browser response."
-                          )
-
-                          pdf_saved = True
-
-                  except Exception as error:
-                      print(
-                          "Could not read captured response:",
-                          str(error)
-                      )
-
-              # If the browser response was not directly
-              # readable, test candidate URLs using the same
-              # authenticated browser session.
-              if not pdf_saved:
-                  for candidate_url in candidate_urls:
-                      print("")
-                      print(
-                          "Testing candidate:",
-                          candidate_url
-                      )
-
-                      try:
-                          candidate_response = (
-                              context.request.get(
-                                  candidate_url,
-                                  headers={
-                                      "Referer": popup.url
-                                  },
-                                  timeout=120000,
-                                  fail_on_status_code=False
-                              )
-                          )
-
-                          candidate_type = (
-                              candidate_response.headers.get(
-                                  "content-type",
-                                  ""
-                              )
-                          )
-
-                          candidate_body = (
-                              candidate_response.body()
-                          )
-
-                          starts_with_pdf = (
-                              candidate_body[:4]
-                              == b"%PDF"
-                          )
-
-                          print(
-                              "Candidate status:",
-                              candidate_response.status
-                          )
-
-                          print(
-                              "Candidate Content-Type:",
-                              candidate_type
-                          )
-
-                          print(
-                              "Candidate size:",
-                              len(candidate_body)
-                          )
-
-                          print(
-                              "Candidate starts with PDF:",
-                              starts_with_pdf
-                          )
-
-                          if (
-                              starts_with_pdf
-                              or
-                              "application/pdf"
-                              in candidate_type.lower()
-                          ):
-                              PDF_FILE.write_bytes(
-                                  candidate_body
-                              )
-
-                              print(
-                                  "PDF saved from candidate URL."
-                              )
-
-                              pdf_saved = True
-                              break
-
-                      except Exception as error:
-                          print(
-                              "Candidate failed:",
-                              str(error)
-                          )
-
-              print("")
-              print("========================================")
-              print("PDF VIEWER TEST RESULT")
-              print("========================================")
-              print(
-                  "Viewer opened:",
-                  True
-              )
-              print(
-                  "Viewer URL:",
-                  popup.url
-              )
-              print(
-                  "Network PDF responses:",
-                  len(viewer_responses)
-              )
-              print(
-                  "Candidate URLs:",
-                  len(candidate_urls)
-              )
-              print(
-                  "PDF saved:",
-                  pdf_saved
-              )
-              print(
-                  "Output exists:",
-                  PDF_FILE.exists()
-              )
-
-              if PDF_FILE.exists():
-                  output_bytes = PDF_FILE.read_bytes()
-
-                  print(
-                      "Output size:",
-                      len(output_bytes)
-                  )
-
-                  print(
-                      "Starts with PDF:",
-                      output_bytes[:4] == b"%PDF"
-                  )
-
-              else:
-                  print(
-                      "Output size:",
-                      0
-                  )
-
-                  print(
-                      "Starts with PDF:",
-                      False
-                  )
-
-              print("========================================")
-
-              popup.close()
-              browser.close()
-
-          if not PDF_FILE.exists():
-              raise RuntimeError(
-                  "The viewer opened, but the underlying "
-                  "PDF could not be captured."
-              )
-
-          final_bytes = PDF_FILE.read_bytes()
-
-          if final_bytes[:4] != b"%PDF":
-              raise RuntimeError(
-                  "The saved output is not a valid PDF."
-              )
-
-          print("")
-          print("PDF DOWNLOAD SUCCESSFUL")
-          print("Saved as:", PDF_FILE)
-          print("PDF size:", len(final_bytes))
-          PY
-
-      - name: Upload downloaded PDF
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: eGazette-Viewer-PDF
-          path: first_gazette_playwright_test.pdf
-          retention-days: 3
-          if-no-files-found: error
-
-      - name: Upload diagnostic files
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: eGazette-Viewer-Diagnostic
-          path: |
-            egazette_recent_uploads.png
-            egazette_pdf_viewer.png
-            egazette_pdf_viewer.html
-            first_gazette_playwright_test.pdf
-          retention-days: 3
-          if-no-files-found: ignore
+                      "No viewer popup detected for:",
+ 
