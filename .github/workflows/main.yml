@@ -58,6 +58,7 @@ jobs:
                   args=[
                       "--disable-dev-shm-usage",
                       "--no-sandbox",
+                      "--disable-http2",
                       "--disable-blink-features=AutomationControlled"
                   ]
               )
