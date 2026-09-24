@@ -1,4 +1,4 @@
-name: eGazette PDF Download Test
+name: eGazette PDF Download Test V2
 
 on:
   workflow_dispatch:
@@ -15,41 +15,100 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Python packages
-        run: python -m pip install requests beautifulsoup4
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install requests beautifulsoup4
 
       - name: Test eGazette PDF download
         run: |
           python - <<'PY'
           import re
+          import time
           import requests
           import urllib3
 
           from bs4 import BeautifulSoup
           from urllib.parse import urljoin
+          from requests.adapters import HTTPAdapter
+          from urllib3.util.retry import Retry
 
           urllib3.disable_warnings()
 
           REQUEST_TIMEOUT = 120
 
+          HOME_URL = "https://egazette.gov.in/"
+
+          PDF_OUTPUT_FILE = "first_gazette_test.pdf"
+
+          DIAGNOSTIC_FILE = "pdf_download_response.html"
+
           session = requests.Session()
+
+          retry_strategy = Retry(
+              total=3,
+              connect=3,
+              read=3,
+              backoff_factor=3,
+              status_forcelist=[
+                  429,
+                  500,
+                  502,
+                  503,
+                  504
+              ],
+              allowed_methods=[
+                  "GET"
+              ]
+          )
+
+          adapter = HTTPAdapter(
+              max_retries=retry_strategy
+          )
+
+          session.mount(
+              "https://",
+              adapter
+          )
+
+          session.mount(
+              "http://",
+              adapter
+          )
 
           session.headers.update({
               "User-Agent": (
-                  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                  "AppleWebKit/537.36 (KHTML, like Gecko) "
-                  "Chrome/140.0.0.0 Safari/537.36"
+                  "Mozilla/5.0 "
+                  "(Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) "
+                  "Chrome/140.0.0.0 "
+                  "Safari/537.36 "
+                  "Edg/140.0.0.0"
               ),
               "Accept": (
-                  "text/html,application/xhtml+xml,application/xml;"
-                  "q=0.9,*/*;q=0.8"
+                  "text/html,"
+                  "application/xhtml+xml,"
+                  "application/xml;q=0.9,"
+                  "image/avif,"
+                  "image/webp,"
+                  "image/apng,"
+                  "*/*;q=0.8"
               ),
-              "Accept-Language": "en-US,en;q=0.9"
+              "Accept-Language": (
+                  "en-US,en;q=0.9"
+              ),
+              "Cache-Control": "no-cache",
+              "Pragma": "no-cache",
+              "Upgrade-Insecure-Requests": "1"
           })
 
-          print("Opening eGazette website...")
+          print("")
+          print("======================================")
+          print("OPENING EGAZETTE")
+          print("======================================")
 
           home_response = session.get(
-              "https://egazette.gov.in/",
+              HOME_URL,
               verify=False,
               timeout=REQUEST_TIMEOUT,
               allow_redirects=True
@@ -57,17 +116,29 @@ jobs:
 
           home_response.raise_for_status()
 
-          print("Home URL:", home_response.url)
+          print(
+              "Home status:",
+              home_response.status_code
+          )
+
+          print(
+              "Home final URL:",
+              home_response.url
+          )
 
           session_match = re.search(
-              r"https://egazette\.gov\.in/\(S\([^)]+\)\)",
-              home_response.url
+              r"https://egazette\.gov\.in/"
+              r"\(S\([^)]+\)\)",
+              home_response.url,
+              re.IGNORECASE
           )
 
           if not session_match:
               session_match = re.search(
-                  r"https://egazette\.gov\.in/\(S\([^)]+\)\)",
-                  home_response.text
+                  r"https://egazette\.gov\.in/"
+                  r"\(S\([^)]+\)\)",
+                  home_response.text,
+                  re.IGNORECASE
               )
 
           if not session_match:
@@ -82,7 +153,13 @@ jobs:
               + "/RecentUploads.aspx?Category=6"
           )
 
-          print("Opening Recent Uploads page...")
+          print("")
+          print(
+              "Recent Uploads URL:",
+              recent_url
+          )
+
+          time.sleep(2)
 
           recent_response = session.get(
               recent_url,
@@ -95,6 +172,16 @@ jobs:
           )
 
           recent_response.raise_for_status()
+
+          print(
+              "Recent Uploads status:",
+              recent_response.status_code
+          )
+
+          print(
+              "Recent Uploads final URL:",
+              recent_response.url
+          )
 
           if "error.aspx" in recent_response.url.lower():
               raise RuntimeError(
@@ -121,35 +208,88 @@ jobs:
                   "PDF download button was not found."
               )
 
-          gazette_row = pdf_button.find_parent("tr")
+          gazette_row = pdf_button.find_parent(
+              "tr"
+          )
 
           if not gazette_row:
               raise RuntimeError(
-                  "Gazette row for PDF button was not found."
+                  "Gazette row was not found."
               )
 
           cells = [
-              cell.get_text(" ", strip=True)
+              cell.get_text(
+                  " ",
+                  strip=True
+              )
               for cell in gazette_row.find_all(
                   "td",
                   recursive=False
               )
           ]
 
-          ministry = cells[1] if len(cells) > 1 else ""
-          title = cells[4] if len(cells) > 4 else ""
-          gazette_number = cells[8] if len(cells) > 8 else ""
+          ministry = (
+              cells[1]
+              if len(cells) > 1
+              else ""
+          )
+
+          department = (
+              cells[2]
+              if len(cells) > 2
+              else ""
+          )
+
+          title = (
+              cells[4]
+              if len(cells) > 4
+              else ""
+          )
+
+          issue_date = (
+              cells[6]
+              if len(cells) > 6
+              else ""
+          )
+
+          publish_date = (
+              cells[7]
+              if len(cells) > 7
+              else ""
+          )
+
+          gazette_number = (
+              cells[8]
+              if len(cells) > 8
+              else ""
+          )
+
+          button_name = pdf_button.get(
+              "name",
+              ""
+          )
 
           print("")
-          print("========= SELECTED GAZETTE =========")
+          print("======================================")
+          print("SELECTED GAZETTE")
+          print("======================================")
           print("Ministry:", ministry)
+          print("Department:", department)
           print("Title:", title)
+          print("Issue date:", issue_date)
+          print("Publish date:", publish_date)
           print("Gazette No.:", gazette_number)
-          print("Button name:", pdf_button.get("name"))
-          print("====================================")
-          print("")
+          print("Button name:", button_name)
+          print("======================================")
 
-          form = pdf_button.find_parent("form")
+          if not button_name:
+              raise RuntimeError(
+                  "PDF button name was not found."
+              )
+
+          form = pdf_button.find_parent(
+              "form"
+          )
 
           if not form:
               raise RuntimeError(
@@ -158,44 +298,210 @@ jobs:
 
           post_data = {}
 
-          for field in form.find_all("input"):
-              field_name = field.get("name")
-              field_type = (
-                  field.get("type", "")
-                  .strip()
-                  .lower()
+          # Preserve all standard successful form controls.
+          for input_field in form.find_all(
+              "input"
+          ):
+              field_name = input_field.get(
+                  "name"
               )
 
               if not field_name:
                   continue
 
-              if field_type == "hidden":
-                  post_data[field_name] = field.get(
+              field_type = input_field.get(
+                  "type",
+                  "text"
+              ).strip().lower()
+
+              if field_type in [
+                  "submit",
+                  "button",
+                  "reset",
+                  "file",
+                  "image"
+              ]:
+                  continue
+
+              if field_type in [
+                  "checkbox",
+                  "radio"
+              ]:
+                  if not input_field.has_attr(
+                      "checked"
+                  ):
+                      continue
+
+              post_data[field_name] = (
+                  input_field.get(
                       "value",
                       ""
                   )
-
-          button_name = pdf_button.get("name")
-
-          if not button_name:
-              raise RuntimeError(
-                  "PDF button name was not found."
               )
 
-          post_data["__EVENTTARGET"] = ""
-          post_data["__EVENTARGUMENT"] = ""
+          # Preserve text-area values.
+          for textarea in form.find_all(
+              "textarea"
+          ):
+              field_name = textarea.get(
+                  "name"
+              )
 
-          post_data[f"{button_name}.x"] = "7"
-          post_data[f"{button_name}.y"] = "9"
+              if field_name:
+                  post_data[field_name] = (
+                      textarea.get_text()
+                  )
 
-          form_action = form.get("action", "")
+          # Preserve selected drop-down values.
+          for select in form.find_all(
+              "select"
+          ):
+              field_name = select.get(
+                  "name"
+              )
 
-          post_url = urljoin(
-              recent_response.url,
-              form_action
+              if not field_name:
+                  continue
+
+              selected_options = (
+                  select.find_all(
+                      "option",
+                      selected=True
+                  )
+              )
+
+              if not selected_options:
+                  first_option = select.find(
+                      "option"
+                  )
+
+                  if first_option:
+                      selected_options = [
+                          first_option
+                      ]
+
+              if selected_options:
+                  post_data[field_name] = (
+                      selected_options[0].get(
+                          "value",
+                          selected_options[0]
+                          .get_text(
+                              " ",
+                              strip=True
+                          )
+                      )
+                  )
+
+          # Do not replace ASP.NET event fields.
+          # Preserve exactly what came from the page.
+          if "__EVENTTARGET" not in post_data:
+              post_data["__EVENTTARGET"] = ""
+
+          if "__EVENTARGUMENT" not in post_data:
+              post_data["__EVENTARGUMENT"] = ""
+
+          # Preserve page-number field found in the browser.
+          if "txtPageNo" not in post_data:
+              post_data["txtPageNo"] = ""
+
+          # Simulate a genuine click on the ImageButton.
+          post_data[
+              f"{button_name}.x"
+          ] = "7"
+
+          post_data[
+              f"{button_name}.y"
+          ] = "9"
+
+          print("")
+          print("======================================")
+          print("ASP.NET FORM CHECK")
+          print("======================================")
+
+          important_fields = [
+              "__EVENTTARGET",
+              "__EVENTARGUMENT",
+              "__VIEWSTATE",
+              "__VIEWSTATEGENERATOR",
+              "__VIEWSTATEENCRYPTED",
+              "__EVENTVALIDATION",
+              "__SCROLLPOSITIONX",
+              "__SCROLLPOSITIONY",
+              "hidden1",
+              "txtPageNo",
+              f"{button_name}.x",
+              f"{button_name}.y"
+          ]
+
+          for field_name in important_fields:
+              if field_name in post_data:
+                  field_value = str(
+                      post_data[field_name]
+                  )
+
+                  if field_name in [
+                      "__VIEWSTATE",
+                      "__EVENTVALIDATION"
+                  ]:
+                      print(
+                          field_name,
+                          "=",
+                          "PRESENT",
+                          f"({len(field_value)} characters)"
+                      )
+                  else:
+                      print(
+                          field_name,
+                          "=",
+                          field_value
+                      )
+              else:
+                  print(
+                      field_name,
+                      "=",
+                      "NOT FOUND"
+                  )
+
+          print(
+              "Total submitted fields:",
+              len(post_data)
           )
 
-          print("Submitting ASP.NET PDF request...")
+          print("======================================")
+
+          form_action = form.get(
+              "action"
+          )
+
+          if form_action:
+              post_url = urljoin(
+                  recent_response.url,
+                  form_action
+              )
+          else:
+              post_url = recent_response.url
+
+          # Ensure Category=6 remains in the POST URL.
+          if "Category=6" not in post_url:
+              separator = (
+                  "&"
+                  if "?" in post_url
+                  else "?"
+              )
+
+              post_url = (
+                  post_url
+                  + separator
+                  + "Category=6"
+              )
+
+          print("")
+          print(
+              "Submitting PDF request to:",
+              post_url
+          )
+
+          time.sleep(2)
 
           pdf_response = session.post(
               post_url,
@@ -203,80 +509,180 @@ jobs:
               headers={
                   "Referer": recent_response.url,
                   "Origin": "https://egazette.gov.in",
-                  "User-Agent": session.headers[
-                      "User-Agent"
-                  ]
+                  "Content-Type": (
+                      "application/"
+                      "x-www-form-urlencoded"
+                  ),
+                  "Accept": (
+                      "text/html,"
+                      "application/xhtml+xml,"
+                      "application/xml;q=0.9,"
+                      "application/pdf;q=0.9,"
+                      "*/*;q=0.8"
+                  ),
+                  "Sec-Fetch-Dest": "document",
+                  "Sec-Fetch-Mode": "navigate",
+                  "Sec-Fetch-Site": "same-origin",
+                  "Sec-Fetch-User": "?1",
+                  "Upgrade-Insecure-Requests": "1"
               },
               verify=False,
               timeout=REQUEST_TIMEOUT,
               allow_redirects=True
           )
 
-          content_type = pdf_response.headers.get(
-              "Content-Type",
-              ""
+          content_type = (
+              pdf_response.headers.get(
+                  "Content-Type",
+                  ""
+              )
           )
 
-          content_disposition = pdf_response.headers.get(
-              "Content-Disposition",
-              ""
+          content_disposition = (
+              pdf_response.headers.get(
+                  "Content-Disposition",
+                  ""
+              )
+          )
+
+          content_length = len(
+              pdf_response.content
+          )
+
+          starts_with_pdf = (
+              pdf_response.content[:4]
+              == b"%PDF"
           )
 
           is_pdf = (
-              pdf_response.content[:4] == b"%PDF"
+              starts_with_pdf
               or
-              "application/pdf" in content_type.lower()
+              "application/pdf"
+              in content_type.lower()
           )
 
           print("")
-          print("========= PDF DOWNLOAD TEST =========")
-          print("Status:", pdf_response.status_code)
-          print("Content-Type:", content_type)
+          print("======================================")
+          print("PDF DOWNLOAD TEST RESULT")
+          print("======================================")
+          print(
+              "Status:",
+              pdf_response.status_code
+          )
+          print(
+              "Final URL:",
+              pdf_response.url
+          )
+          print(
+              "Content-Type:",
+              content_type
+          )
           print(
               "Content-Disposition:",
               content_disposition
           )
-          print("File size:", len(pdf_response.content))
-          print("Starts with PDF:", is_pdf)
-          print("=====================================")
+          print(
+              "File size:",
+              content_length
+          )
+          print(
+              "Starts with PDF:",
+              starts_with_pdf
+          )
+          print(
+              "Detected as PDF:",
+              is_pdf
+          )
+          print("======================================")
 
-          if not is_pdf:
+          if is_pdf:
               with open(
-                  "pdf_download_response.html",
+                  PDF_OUTPUT_FILE,
                   "wb"
-              ) as response_file:
-                  response_file.write(
+              ) as pdf_file:
+                  pdf_file.write(
                       pdf_response.content
                   )
 
-              raise RuntimeError(
-                  "The response was not a PDF. "
-                  "The response was saved for diagnosis."
+              print("")
+              print(
+                  "PDF DOWNLOADED SUCCESSFULLY"
+              )
+              print(
+                  "Saved as:",
+                  PDF_OUTPUT_FILE
               )
 
-          output_file = "first_gazette_test.pdf"
+          else:
+              with open(
+                  DIAGNOSTIC_FILE,
+                  "wb"
+              ) as diagnostic_file:
+                  diagnostic_file.write(
+                      pdf_response.content
+                  )
 
-          with open(output_file, "wb") as pdf_file:
-              pdf_file.write(pdf_response.content)
+              print("")
+              print(
+                  "Response was HTML, not PDF."
+              )
 
-          print("")
-          print("PDF downloaded successfully.")
-          print("Saved as:", output_file)
+              print(
+                  "Diagnostic response saved as:",
+                  DIAGNOSTIC_FILE
+              )
+
+              response_soup = BeautifulSoup(
+                  pdf_response.content,
+                  "html.parser"
+              )
+
+              page_title = (
+                  response_soup.title
+                  .get_text(
+                      " ",
+                      strip=True
+                  )
+                  if response_soup.title
+                  else ""
+              )
+
+              print(
+                  "Returned page title:",
+                  page_title
+              )
+
+              error_text = (
+                  response_soup.get_text(
+                      " ",
+                      strip=True
+                  )
+              )
+
+              print(
+                  "Returned text preview:",
+                  error_text[:500]
+              )
+
+              raise RuntimeError(
+                  "The response was not a PDF."
+              )
           PY
 
       - name: Upload downloaded PDF
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: eGazette-PDF-Test
+          name: eGazette-PDF-Test-V2
           path: first_gazette_test.pdf
           retention-days: 3
+          if-no-files-found: error
 
       - name: Upload diagnostic response
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: eGazette-PDF-Diagnostic
+          name: eGazette-PDF-Diagnostic-V2
           path: pdf_download_response.html
-          if-no-files-found: ignore
           retention-days: 3
+          if-no-files-found: ignore
