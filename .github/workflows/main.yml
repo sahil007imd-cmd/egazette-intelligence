@@ -146,9 +146,10 @@ jobs:
               )
 
               recent_response = page.goto(
-                  recent_url,
-                  wait_until="domcontentloaded",
-                  timeout=120000
+                recent_url,
+                referer=page.url,
+                wait_until="domcontentloaded",
+                timeout=120000
               )
 
               if recent_response:
