@@ -104,7 +104,13 @@ jobs:
 
           soup = BeautifulSoup(recent_response.text, "html.parser")
           print("========= PDF LINK TEST =========")
-          print(soup.find_all("a", href=True)[:20])
+          pdf_button = soup.find(
+            "input",
+            {"name": re.compile(r"imgbtndownload")}
+          )
+
+          print(pdf_button.parent.parent.prettify())
+
           raise RuntimeError("TEST COMPLETE")
           
           records = []
