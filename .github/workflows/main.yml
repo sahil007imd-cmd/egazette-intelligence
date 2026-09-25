@@ -3,8 +3,6 @@ name: eGazette Intelligent Email Test
 on:
   workflow_dispatch:
   schedule:
-    # 08:00, 11:00, 14:00, 17:00, 20:00 and 23:00 IST
-    # GitHub cron is configured in UTC.
     - cron: '30 2,5,8,11,14,17 * * *'
 
 permissions:
@@ -26,7 +24,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: '3.12'
 
       - name: Install packages
         run: |
@@ -34,750 +32,229 @@ jobs:
           python -m pip install playwright pypdf requests
 
       - name: Install Chromium
-        run: |
-          python -m playwright install --with-deps chromium
+        run: python -m playwright install --with-deps chromium
 
       - name: Process eGazette notifications
         env:
           POWER_AUTOMATE_URL: ${{ secrets.POWER_AUTOMATE_URL }}
         run: |
           python - <<'PY'
-          import json
-          import os
-          import re
+          import json, os, re, time
           from pathlib import Path
           from urllib.parse import unquote, urljoin
-
           import requests
-          from playwright.sync_api import (
-              TimeoutError as PlaywrightTimeoutError,
-              sync_playwright
-          )
           from pypdf import PdfReader
-
-
-          # --------------------------------------------------
-          # SETTINGS
-          # --------------------------------------------------
+          from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
           HOME_URL = "https://egazette.gov.in/"
-
-          STATE_FILE = Path(
-              "seen_gazette_ids.json"
-          )
-
-          PDF_DIR = Path(
-              "downloaded_gazettes"
-          )
-
+          STATE_FILE = Path("seen_gazette_ids.json")
+          PDF_DIR = Path("downloaded_gazettes")
+          DIAG_DIR = Path("diagnostic_files")
+          EMAIL_SUBJECT = "eGazette Hourly Intelligence"
           MAX_PDFS = 6
           MAX_PDF_TEXT = 12000
           MAX_AI_INPUT = 80000
-
-          EMAIL_SUBJECT = (
-              "eGazette Hourly Intelligence"
-          )
-
-          POWER_AUTOMATE_URL = os.environ.get(
-              "POWER_AUTOMATE_URL",
-              ""
-          ).strip()
+          POWER_AUTOMATE_URL = os.environ.get("POWER_AUTOMATE_URL", "").strip()
 
           if not POWER_AUTOMATE_URL:
-              raise RuntimeError(
-                  "POWER_AUTOMATE_URL secret is missing."
-              )
+              raise RuntimeError("POWER_AUTOMATE_URL secret is missing.")
 
-          PDF_DIR.mkdir(
-              exist_ok=True
-          )
-
-
-          # --------------------------------------------------
-          # PRIMARY FILTERING RULES
-          # --------------------------------------------------
+          PDF_DIR.mkdir(exist_ok=True)
+          DIAG_DIR.mkdir(exist_ok=True)
 
           RELEVANT_MINISTRIES = [
-              "road transport",
-              "heavy industr",
-              "environment",
-              "petroleum",
-              "commerce",
-              "finance",
-              "power",
-              "renewable energy",
-              "railways",
-              "electronics",
-              "skill development",
-              "labour",
-              "steel",
-              "mines"
+              "road transport", "heavy industr", "environment", "petroleum",
+              "commerce", "finance", "power", "renewable energy", "railways",
+              "electronics", "skill development", "labour", "steel", "mines"
           ]
-
           RELEVANT_TERMS = [
-              "motor vehicle",
-              "automobile",
-              "automotive",
-              "passenger vehicle",
-              "commercial vehicle",
-              "cmvr",
-              "automotive industry standard",
-              "bharat ncap",
-              "adas",
-              "vehicle safety",
-              "road safety",
-              "emission",
-              "bharat stage",
-              "bs6",
-              "bs vi",
-              "cafe",
-              "fuel economy",
-              "electric vehicle",
-              "electric mobility",
-              "charging",
-              "battery",
-              "hybrid",
-              "cng",
-              "bio-cng",
-              "compressed biogas",
-              "ethanol",
-              "flex fuel",
-              "biofuel",
-              "hydrogen",
-              "petrol",
-              "diesel",
-              "auto component",
-              "semiconductor",
-              "localisation",
-              "localization",
-              "pli scheme",
-              "production linked incentive",
-              "manufacturing policy",
-              "industrial policy",
-              "customs duty",
-              "customs tariff",
-              "import policy",
-              "export policy",
-              "foreign trade policy",
-              "free trade agreement",
-              "fta",
-              "dgft",
-              "logistics",
-              "freight",
-              "gati shakti",
-              "scrappage",
-              "recycling",
-              "circular economy",
-              "carbon credit",
-              "carbon market",
-              "bis standard",
-              "quality control order",
-              "testing centre",
-              "testing agency"
+              "motor vehicle", "automobile", "automotive", "passenger vehicle",
+              "commercial vehicle", "cmvr", "automotive industry standard",
+              "bharat ncap", "adas", "vehicle safety", "road safety", "emission",
+              "bharat stage", "bs6", "bs vi", "cafe", "fuel economy",
+              "electric vehicle", "electric mobility", "charging", "battery",
+              "hybrid", "cng", "bio-cng", "compressed biogas", "ethanol",
+              "flex fuel", "biofuel", "hydrogen", "petrol", "diesel",
+              "auto component", "semiconductor", "localisation", "localization",
+              "pli scheme", "production linked incentive", "manufacturing policy",
+              "industrial policy", "customs duty", "customs tariff", "import policy",
+              "export policy", "foreign trade policy", "free trade agreement", "fta",
+              "dgft", "logistics", "freight", "gati shakti", "scrappage",
+              "recycling", "circular economy", "carbon credit", "carbon market",
+              "bis standard", "quality control order", "testing centre", "testing agency"
           ]
-
           OFFICIAL_CHANGE_TERMS = [
-              "appointment",
-              "appointed",
-              "transfer",
-              "transferred",
-              "posting",
-              "posted",
-              "additional charge",
-              "assumption of charge",
-              "relinquishment of charge",
-              "retirement",
-              "retired",
-              "extension of tenure",
-              "secretary",
-              "additional secretary",
-              "joint secretary",
-              "chairman",
-              "chairperson",
-              "director general",
+              "appointment", "appointed", "transfer", "transferred", "posting",
+              "posted", "additional charge", "assumption of charge",
+              "relinquishment of charge", "retirement", "retired",
+              "extension of tenure", "secretary", "additional secretary",
+              "joint secretary", "chairman", "chairperson", "director general",
               "member secretary"
           ]
-
           IMPORTANT_BODIES = [
-              "road transport",
-              "heavy industr",
-              "environment",
-              "petroleum",
-              "commerce",
-              "dpiit",
-              "dgft",
-              "bureau of indian standards",
-              "bis",
-              "caqm",
-              "air quality management",
-              "niti aayog",
-              "power",
-              "renewable energy",
-              "railways"
+              "road transport", "heavy industr", "environment", "petroleum",
+              "commerce", "dpiit", "dgft", "bureau of indian standards", "bis",
+              "caqm", "air quality management", "niti aayog", "power",
+              "renewable energy", "railways"
           ]
-
           EXCLUSION_TERMS = [
-              "section 3a",
-              "section 3d",
-              "section 20a",
-              "section 20e",
-              "section 20(e)",
-              "land acquisition",
-              "acquisition of land",
-              "competent authority for land acquisition",
-              "toll plaza",
+              "section 3a", "section 3d", "section 20a", "section 20e",
+              "section 20(e)", "land acquisition", "acquisition of land",
+              "competent authority for land acquisition", "toll plaza",
               "user fee notification"
           ]
 
-
-          # --------------------------------------------------
-          # HELPER FUNCTIONS
-          # --------------------------------------------------
-
           def clean(value):
-              return " ".join(
-                  str(value or "").split()
-              )
-
+              return " ".join(str(value or "").split())
 
           def has_any(text, terms):
-              return any(
-                  term in text
-                  for term in terms
-              )
-
+              return any(term in text for term in terms)
 
           def safe_name(value):
-              value = re.sub(
-                  r"[^A-Za-z0-9._-]+",
-                  "_",
-                  value
-              )
-
-              return value.strip("_")[:100]
-
+              return re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("_")[:100]
 
           def load_seen():
               try:
-                  data = json.loads(
-                      STATE_FILE.read_text(
-                          encoding="utf-8"
-                      )
-                  )
-
-                  if isinstance(data, list):
-                      return set(data)
-
-              except (
-                  FileNotFoundError,
-                  json.JSONDecodeError
-              ):
-                  pass
-
-              return set()
-
+                  data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+                  return set(data if isinstance(data, list) else [])
+              except (FileNotFoundError, json.JSONDecodeError):
+                  return set()
 
           def save_seen(values):
               STATE_FILE.write_text(
-                  json.dumps(
-                      sorted(values),
-                      indent=2,
-                      ensure_ascii=False
-                  ),
+                  json.dumps(sorted(values), indent=2, ensure_ascii=False),
                   encoding="utf-8"
               )
 
-
           def primary_screen(record):
               combined = clean(
-                  record["ministry"]
-                  + " "
-                  + record["department"]
-                  + " "
-                  + record["title"]
+                  record["ministry"] + " " + record["department"] + " " + record["title"]
               ).lower()
-
               official_change = (
-                  has_any(
-                      combined,
-                      OFFICIAL_CHANGE_TERMS
-                  )
-                  and
-                  has_any(
-                      combined,
-                      IMPORTANT_BODIES
-                  )
+                  has_any(combined, OFFICIAL_CHANGE_TERMS)
+                  and has_any(combined, IMPORTANT_BODIES)
               )
-
               if official_change:
-                  return (
-                      True,
-                      "Official change in relevant ministry"
-                  )
-
-              subject_match = has_any(
-                  combined,
-                  RELEVANT_TERMS
-              )
-
-              excluded = has_any(
-                  combined,
-                  EXCLUSION_TERMS
-              )
-
+                  return True, "Official change in relevant ministry"
+              subject_match = has_any(combined, RELEVANT_TERMS)
+              excluded = has_any(combined, EXCLUSION_TERMS)
               if excluded and not subject_match:
-                  return (
-                      False,
-                      "Routine land/toll notification"
-                  )
-
+                  return False, "Routine land/toll notification"
               if subject_match:
-                  return (
-                      True,
-                      "Automotive policy keyword match"
-                  )
-
-              if has_any(
-                  combined,
-                  RELEVANT_MINISTRIES
-              ):
-                  return (
-                      True,
-                      "Relevant ministry review"
-                  )
-
-              return (
-                  False,
-                  "No preliminary automotive relevance"
-              )
-
+                  return True, "Automotive policy keyword match"
+              if has_any(combined, RELEVANT_MINISTRIES):
+                  return True, "Relevant ministry review"
+              return False, "No preliminary automotive relevance"
 
           def extract_pdf_text(pdf_path):
-              reader = PdfReader(
-                  str(pdf_path)
-              )
-
               output = []
-
-              for page_number, page in enumerate(
-                  reader.pages,
-                  start=1
-              ):
+              reader = PdfReader(str(pdf_path))
+              for number, pdf_page in enumerate(reader.pages, start=1):
                   try:
-                      page_text = clean(
-                          page.extract_text() or ""
-                      )
-
+                      text = clean(pdf_page.extract_text() or "")
                   except Exception as error:
-                      print(
-                          f"Page {page_number} warning:",
-                          error
-                      )
+                      print(f"Page {number} extraction warning: {error}")
+                      text = ""
+                  if text:
+                      output.append(f"[PAGE {number}]\n{text}")
+              return "\n\n".join(output)[:MAX_PDF_TEXT]
 
-                      page_text = ""
-
-                  if page_text:
-                      output.append(
-                          f"[PAGE {page_number}]\n"
-                          f"{page_text}"
-                      )
-
-              return "\n\n".join(
-                  output
-              )[:MAX_PDF_TEXT]
-
-
-          def locate_pdf(
-              context,
-              viewer,
-              gazette_number
-          ):
-              viewer.set_default_timeout(
-                  120000
-              )
-
+          def locate_pdf(context, viewer, gazette_number):
               try:
-                  viewer.wait_for_load_state(
-                      "domcontentloaded",
-                      timeout=120000
-                  )
-
+                  viewer.wait_for_load_state("domcontentloaded", timeout=120000)
               except PlaywrightTimeoutError:
                   pass
-
-              viewer.wait_for_timeout(
-                  8000
-              )
-
-              viewer_html = viewer.content()
+              viewer.wait_for_timeout(8000)
+              html_text = viewer.content()
               candidates = []
 
               def add_candidate(value):
                   if not value:
                       return
-
-                  value = unquote(
-                      str(value).strip()
-                  )
-
-                  if value.startswith(
-                      "javascript:"
-                  ):
+                  value = unquote(str(value).strip())
+                  if value.startswith("javascript:"):
                       return
-
-                  absolute_url = urljoin(
-                      viewer.url,
-                      value
-                  )
-
-                  if absolute_url not in candidates:
-                      candidates.append(
-                          absolute_url
-                      )
+                  full_url = urljoin(viewer.url, value)
+                  if full_url not in candidates:
+                      candidates.append(full_url)
 
               for selector, attribute in [
-                  ("iframe", "src"),
-                  ("embed", "src"),
-                  ("object", "data"),
-                  ("source", "src"),
-                  ("a", "href")
+                  ("iframe", "src"), ("embed", "src"), ("object", "data"),
+                  ("source", "src"), ("a", "href")
               ]:
-                  elements = viewer.locator(
-                      selector
-                  )
-
-                  for index in range(
-                      elements.count()
-                  ):
+                  elements = viewer.locator(selector)
+                  for index in range(elements.count()):
                       try:
-                          value = (
-                              elements
-                              .nth(index)
-                              .get_attribute(attribute)
-                          )
-
-                          add_candidate(value)
-
+                          add_candidate(elements.nth(index).get_attribute(attribute))
                       except Exception:
                           pass
 
               for frame in viewer.frames:
-                  if (
-                      frame.url
-                      and
-                      frame.url != viewer.url
-                  ):
-                      add_candidate(
-                          frame.url
-                      )
+                  if frame.url and frame.url != viewer.url:
+                      add_candidate(frame.url)
 
-              patterns = [
-                  r"""[^"']+\.pdf(?:\?[^"']*)?""",
-                  r"""[^"']*(?:GetPDF|DownloadPDF|ViewFile|DownloadFile)[^"']*"""
-              ]
-
-              for pattern in patterns:
-                  matches = re.findall(
-                      pattern,
-                      viewer_html,
-                      re.IGNORECASE
-                  )
-
-                  for match in matches:
+              for pattern in [
+                  r'''[^"']+\.pdf(?:\?[^"']*)?''',
+                  r'''[^"']*(?:GetPDF|DownloadPDF|ViewFile|DownloadFile)[^"']*'''
+              ]:
+                  for match in re.findall(pattern, html_text, re.IGNORECASE):
                       add_candidate(match)
 
-              print(
-                  "PDF candidates:",
-                  len(candidates)
-              )
-
+              print("PDF candidates:", len(candidates))
               for candidate in candidates:
                   try:
                       response = context.request.get(
                           candidate,
-                          headers={
-                              "Referer": viewer.url
-                          },
+                          headers={"Referer": viewer.url},
                           timeout=120000,
                           fail_on_status_code=False
                       )
-
                       body = response.body()
-
-                      content_type = (
-                          response.headers.get(
-                              "content-type",
-                              ""
-                          )
-                      )
-
-                      is_pdf = (
-                          body[:4] == b"%PDF"
-                          or
-                          "application/pdf"
-                          in content_type.lower()
-                      )
-
-                      if is_pdf:
-                          output_path = (
-                              PDF_DIR
-                              / (
-                                  safe_name(
-                                      gazette_number
-                                  )
-                                  + ".pdf"
-                              )
-                          )
-
-                          output_path.write_bytes(
-                              body
-                          )
-
-                          print(
-                              "PDF saved:",
-                              output_path
-                          )
-
+                      content_type = response.headers.get("content-type", "")
+                      if body[:4] == b"%PDF" or "application/pdf" in content_type.lower():
+                          output_path = PDF_DIR / (safe_name(gazette_number) + ".pdf")
+                          output_path.write_bytes(body)
                           return output_path
-
                   except Exception as error:
-                      print(
-                          "Candidate warning:",
-                          error
-                      )
-
+                      print("PDF candidate warning:", error)
               return None
 
-
-          def download_pdf(
-              page,
-              context,
-              button,
-              gazette_number
-          ):
+          def download_pdf(page, context, button, gazette_number):
               button.scroll_into_view_if_needed()
-
-              page.wait_for_timeout(
-                  1000
-              )
-
+              page.wait_for_timeout(1000)
               try:
-                  with context.expect_page(
-                      timeout=120000
-                  ) as popup_info:
-                      button.click(
-                          force=True,
-                          timeout=120000
-                      )
-
+                  with context.expect_page(timeout=120000) as popup_info:
+                      button.click(force=True, timeout=120000)
                   viewer = popup_info.value
-
               except PlaywrightTimeoutError:
-                  print(
-                      "Viewer did not open:",
-                      gazette_number
-                  )
-
+                  print("Viewer did not open:", gazette_number)
                   return None
-
               try:
-                  pdf_path = locate_pdf(
-                      context,
-                      viewer,
-                      gazette_number
-                  )
-
+                  return locate_pdf(context, viewer, gazette_number)
               finally:
                   try:
                       viewer.close()
                   except Exception:
                       pass
 
-              return pdf_path
-
-
-          def make_gazette_block(record):
-              pdf_text = record.get(
-                  "pdf_text",
-                  ""
-              )
-
-              if not pdf_text:
-                  pdf_text = (
-                      "PDF was not processed because the "
-                      "primary filter found no likely relevance. "
-                      "Classify this Gazette using the metadata."
-                  )
-
-              return "\n".join([
-                  "GAZETTE START",
-                  "GAZETTE NUMBER: "
-                  + record["gazette_number"],
-                  "MINISTRY: "
-                  + record["ministry"],
-                  "DEPARTMENT: "
-                  + record["department"],
-                  "TITLE: "
-                  + record["title"],
-                  "ISSUE DATE: "
-                  + record["issue_date"],
-                  "PUBLISH DATE: "
-                  + record["publish_date"],
-                  "PRIMARY SCREEN: "
-                  + record["screen_reason"],
-                  "PDF TEXT:",
-                  pdf_text,
-                  "GAZETTE END"
-              ])
-
-
-          # --------------------------------------------------
-          # OPEN EGAZETTE
-          # --------------------------------------------------
-
-          seen_ids = load_seen()
-          records = []
-          pdf_count = 0
-
-          print(
-              "Previously processed IDs:",
-              len(seen_ids)
-          )
-
-          with sync_playwright() as playwright:
-              browser = playwright.chromium.launch(
-                  headless=True,
-                  args=[
-                      "--disable-dev-shm-usage",
-                      "--no-sandbox",
-                      "--disable-http2",
-                      "--disable-blink-features=AutomationControlled"
-                  ]
-              )
-
-              context = browser.new_context(
-                  accept_downloads=True,
-                  ignore_https_errors=True,
-                  viewport={
-                      "width": 1600,
-                      "height": 1000
-                  },
-                  user_agent=(
-                      "Mozilla/5.0 "
-                      "(Windows NT 10.0; Win64; x64) "
-                      "AppleWebKit/537.36 "
-                      "(KHTML, like Gecko) "
-                      "Chrome/140.0.0.0 "
-                      "Safari/537.36"
-                  )
-              )
-
-              page = context.new_page()
-
-              page.set_default_timeout(
-                  120000
-              )
-
-              page.goto(
-                  HOME_URL,
-                  wait_until="domcontentloaded",
-                  timeout=120000
-              )
-
-              page.wait_for_timeout(
-                  3000
-              )
-
-              session_match = re.search(
-                  r"https://egazette\.gov\.in/"
-                  r"\(S\([^)]+\)\)",
-                  page.url,
-                  re.IGNORECASE
-              )
-
-              if not session_match:
-                  session_match = re.search(
-                      r"https://egazette\.gov\.in/"
-                      r"\(S\([^)]+\)\)",
-                      page.content(),
-                      re.IGNORECASE
-                  )
-
-              if not session_match:
-                  raise RuntimeError(
-                      "eGazette session URL was not generated."
-                  )
-
-              recent_url = (
-                  session_match.group(0)
-                  + "/RecentUploads.aspx?Category=6"
-              )
-
-              page.goto(
-                  recent_url,
-                  referer=page.url,
-                  wait_until="domcontentloaded",
-                  timeout=120000
-              )
-
-              if "error.aspx" in page.url.lower():
-                  raise RuntimeError(
-                      "eGazette redirected to error.aspx."
-                  )
-
-              page.wait_for_timeout(
-                  5000
-              )
-
-              rows = page.locator(
-                  "table tr"
-              )
-
-              for row_index in range(
-                  rows.count()
-              ):
-                  cells = (
-                      rows
-                      .nth(row_index)
-                      .locator("td")
-                  )
-
+          def parse_records(page):
+              parsed = []
+              rows = page.locator("table tr")
+              for row_index in range(rows.count()):
+                  cells = rows.nth(row_index).locator("td")
                   if cells.count() < 10:
                       continue
-
                   values = []
-
-                  for cell_index in range(
-                      cells.count()
-                  ):
+                  for cell_index in range(cells.count()):
                       try:
-                          value = (
-                              cells
-                              .nth(cell_index)
-                              .inner_text()
-                          )
-
+                          value = cells.nth(cell_index).inner_text()
                       except Exception:
                           value = ""
-
-                      values.append(
-                          clean(value)
-                      )
-
-                  gazette_number = (
-                      values[8]
-                      if len(values) > 8
-                      else ""
-                  )
-
-                  if not re.match(
-                      r"^[A-Z]{2}-[A-Z]{2}-E-"
-                      r"\d{8}-\d+$",
-                      gazette_number
-                  ):
+                      values.append(clean(value))
+                  gazette_number = values[8] if len(values) > 8 else ""
+                  if not re.match(r"^[A-Z]{2}-[A-Z]{2}-E-\d{8}-\d+$", gazette_number):
                       continue
-
-                  records.append({
+                  parsed.append({
                       "gazette_number": gazette_number,
                       "ministry": values[1],
                       "department": values[2],
@@ -786,323 +263,217 @@ jobs:
                       "publish_date": values[7],
                       "row_index": row_index
                   })
+              return parsed
 
-              print(
-                  "Gazette records found:",
-                  len(records)
+          def load_recent_records(page, recent_url):
+              for attempt in range(1, 4):
+                  print(f"Recent Uploads attempt {attempt}/3")
+                  try:
+                      response = page.goto(
+                          recent_url,
+                          referer=HOME_URL,
+                          wait_until="domcontentloaded",
+                          timeout=120000
+                      )
+                      print("Recent status:", response.status if response else "No response")
+                      print("Recent final URL:", page.url)
+                      if "error.aspx" in page.url.lower():
+                          raise RuntimeError("eGazette redirected to error.aspx.")
+                      try:
+                          page.wait_for_selector(
+                              'input[name*="imgbtndownload"]',
+                              state="attached",
+                              timeout=45000
+                          )
+                      except PlaywrightTimeoutError:
+                          print("PDF buttons not visible within 45 seconds.")
+                      page.wait_for_timeout(5000)
+                      records = parse_records(page)
+                      print("Gazette records found on attempt:", len(records))
+                      if records:
+                          return records
+                  except Exception as error:
+                      print(f"Attempt {attempt} warning: {error}")
+
+                  screenshot = DIAG_DIR / f"recent_uploads_attempt_{attempt}.png"
+                  html_file = DIAG_DIR / f"recent_uploads_attempt_{attempt}.html"
+                  try:
+                      page.screenshot(path=str(screenshot), full_page=True)
+                      html_file.write_text(page.content(), encoding="utf-8")
+                  except Exception as error:
+                      print("Diagnostic save warning:", error)
+
+                  if attempt < 3:
+                      page.goto(HOME_URL, wait_until="domcontentloaded", timeout=120000)
+                      page.wait_for_timeout(5000)
+                      time.sleep(5 * attempt)
+
+              return []
+
+          def gazette_block(record):
+              pdf_text = record.get("pdf_text") or (
+                  "PDF was not processed because the primary filter found no likely relevance. "
+                  "Classify this Gazette using the metadata."
               )
+              return "\n".join([
+                  "GAZETTE START",
+                  "GAZETTE NUMBER: " + record["gazette_number"],
+                  "MINISTRY: " + record["ministry"],
+                  "DEPARTMENT: " + record["department"],
+                  "TITLE: " + record["title"],
+                  "ISSUE DATE: " + record["issue_date"],
+                  "PUBLISH DATE: " + record["publish_date"],
+                  "PRIMARY SCREEN: " + record["screen_reason"],
+                  "PDF TEXT:", pdf_text,
+                  "GAZETTE END"
+              ])
 
-              # Page order is retained.
-              # eGazette displays newest uploads first.
+          seen_ids = load_seen()
+          records = []
+          pdf_count = 0
+          print("Previously processed IDs:", len(seen_ids))
+
+          with sync_playwright() as playwright:
+              browser = playwright.chromium.launch(
+                  headless=True,
+                  args=[
+                      "--disable-dev-shm-usage", "--no-sandbox", "--disable-http2",
+                      "--disable-blink-features=AutomationControlled"
+                  ]
+              )
+              context = browser.new_context(
+                  accept_downloads=True,
+                  ignore_https_errors=True,
+                  viewport={"width": 1600, "height": 1000},
+                  user_agent=(
+                      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/140.0.0.0 Safari/537.36"
+                  )
+              )
+              page = context.new_page()
+              page.set_default_timeout(120000)
+              page.goto(HOME_URL, wait_until="domcontentloaded", timeout=120000)
+              page.wait_for_timeout(3000)
+
+              session_match = re.search(
+                  r"https://egazette\.gov\.in/\(S\([^)]+\)\)",
+                  page.url,
+                  re.IGNORECASE
+              ) or re.search(
+                  r"https://egazette\.gov\.in/\(S\([^)]+\)\)",
+                  page.content(),
+                  re.IGNORECASE
+              )
+              if not session_match:
+                  raise RuntimeError("eGazette session URL was not generated.")
+
+              recent_url = session_match.group(0) + "/RecentUploads.aspx?Category=6"
+              records = load_recent_records(page, recent_url)
+              if not records:
+                  browser.close()
+                  raise RuntimeError(
+                      "No valid Gazette records were found after 3 attempts. "
+                      "Diagnostic files were saved."
+                  )
+
               new_records = [
-                  record
-                  for record in records
-                  if record["gazette_number"]
-                  not in seen_ids
+                  record for record in records
+                  if record["gazette_number"] not in seen_ids
               ]
-
-              print(
-                  "New records:",
-                  len(new_records)
-              )
+              print("New records:", len(new_records))
 
               for record in new_records:
-                  needs_pdf, reason = primary_screen(
-                      record
-                  )
-
+                  needs_pdf, reason = primary_screen(record)
                   record["screen_reason"] = reason
                   record["pdf_text"] = ""
+                  print(record["gazette_number"], "| PDF required:", needs_pdf, "|", reason)
 
-                  print("")
-                  print(
-                      record["gazette_number"],
-                      "| PDF required:",
-                      needs_pdf,
-                      "|",
-                      reason
-                  )
-
-                  if (
-                      not needs_pdf
-                      or
-                      pdf_count >= MAX_PDFS
-                  ):
+                  if not needs_pdf or pdf_count >= MAX_PDFS:
                       continue
 
-                  current_rows = page.locator(
-                      "table tr"
-                  )
-
-                  row_index = record["row_index"]
-
-                  if row_index >= current_rows.count():
-                      print(
-                          "Gazette row unavailable:",
-                          record["gazette_number"]
-                      )
-
+                  current_rows = page.locator("table tr")
+                  if record["row_index"] >= current_rows.count():
+                      print("Gazette row unavailable:", record["gazette_number"])
                       continue
-
-                  row = current_rows.nth(
-                      row_index
-                  )
-
-                  pdf_button = row.locator(
+                  button = current_rows.nth(record["row_index"]).locator(
                       'input[name*="imgbtndownload"]'
                   )
-
-                  if pdf_button.count() == 0:
-                      print(
-                          "PDF button missing:",
-                          record["gazette_number"]
-                      )
-
+                  if button.count() == 0:
+                      print("PDF button missing:", record["gazette_number"])
                       continue
 
                   pdf_path = download_pdf(
-                      page,
-                      context,
-                      pdf_button.first,
-                      record["gazette_number"]
+                      page, context, button.first, record["gazette_number"]
                   )
-
                   if not pdf_path:
-                      print(
-                          "PDF download failed:",
-                          record["gazette_number"]
-                      )
-
+                      print("PDF download failed:", record["gazette_number"])
                       continue
 
-                  extracted_text = extract_pdf_text(
-                      pdf_path
-                  )
-
-                  if extracted_text:
-                      record["pdf_text"] = (
-                          extracted_text
-                      )
-
+                  text = extract_pdf_text(pdf_path)
+                  if text:
+                      record["pdf_text"] = text
                       pdf_count += 1
-
-                      print(
-                          "PDF text characters:",
-                          len(extracted_text)
-                      )
+                      print("PDF text characters:", len(text))
 
               browser.close()
-
-
-          if not records:
-              raise RuntimeError(
-                  "No valid Gazette records were found."
-              )
-
-
-          # --------------------------------------------------
-          # CREATE AI INPUT
-          # --------------------------------------------------
 
           if new_records:
               blocks = []
               current_length = 0
-
               for record in new_records:
-                  block = make_gazette_block(
-                      record
-                  )
-
-                  remaining = (
-                      MAX_AI_INPUT
-                      - current_length
-                  )
-
+                  block = gazette_block(record)
+                  remaining = MAX_AI_INPUT - current_length
                   if remaining <= 0:
                       break
-
                   block = block[:remaining]
-
                   blocks.append(block)
+                  current_length += len(block)
 
-                  current_length += len(
-                      block
-                  )
-
-              ai_message = """
-          Analyse every Gazette block independently.
-
-          Prepare the final email in HTML format only.
-
-          Do not return Markdown.
-          Do not use code fences.
-          Do not include explanations before or after the HTML.
-
-          Use exactly one table.
-
-          Determine the opening line as follows:
-
-          1. If at least one Gazette is Relevant:
-             Opening line = Alert
-
-          2. If new Gazettes exist but none are Relevant:
-             Opening line = New Uploads
-
-          The opening line must appear above the table in bold.
-
-          The table must contain exactly these columns:
-
-          Relevant
-          Gazette No.
-          Ministry
-          Title
-          Summary
-
-          Include every Gazette block provided.
+              ai_message = '''
+          Analyse every Gazette block independently and return HTML only.
+          Use exactly one table and preserve the Gazette block order.
           Do not omit Not Relevant Gazettes.
+          If at least one Gazette is Relevant, opening line must be Alert.
+          If none is Relevant, opening line must be New Uploads.
+          Table columns: Relevant | Gazette No. | Ministry | Title | Summary.
+          Relevant rows: Yes, light green #E2F0D9, concise business impact and one short Gazette excerpt.
+          Not Relevant rows: No, light grey #E7E6E6, summary exactly: No material impact on MSIL identified.
+          Treat appointment, transfer, posting, retirement, additional charge or tenure extension in MSIL-relevant ministries/agencies as Relevant.
+          Do not use Markdown or code fences.
 
-          Preserve the order in which Gazette blocks are provided.
-
-          For Relevant Gazettes:
-
-          - Write Yes in the Relevant column.
-          - Use a light green row background: #E2F0D9.
-          - Summary must briefly explain what changed.
-          - Summary must explain potential relevance to MSIL.
-          - Include one short and accurate excerpt from the Gazette.
-          - Keep the entire summary concise.
-
-          For Not Relevant Gazettes:
-
-          - Write No in the Relevant column.
-          - Use a light grey row background: #E7E6E6.
-          - Summary must be exactly:
-            No material impact on MSIL identified.
-
-          Treat appointment, transfer, posting, retirement,
-          additional charge or tenure-extension notifications
-          in MSIL-relevant ministries or agencies as Relevant.
-
-          Use this HTML structure:
-
-          <html>
-          <body style="font-family:Arial,sans-serif;">
-          <p style="font-size:18px;"><strong>Alert or New Uploads</strong></p>
-          <table style="border-collapse:collapse;width:100%;">
-          <tr style="background-color:#D9EAF7;">
-          <th style="border:1px solid #777;padding:8px;">Relevant</th>
-          <th style="border:1px solid #777;padding:8px;">Gazette No.</th>
-          <th style="border:1px solid #777;padding:8px;">Ministry</th>
-          <th style="border:1px solid #777;padding:8px;">Title</th>
-          <th style="border:1px solid #777;padding:8px;">Summary</th>
-          </tr>
-          Add one table row for each Gazette.
-          </table>
-          </body>
-          </html>
-
-          Gazette blocks follow:
-
-          """ + "\n\n".join(blocks)
-
+          Gazette blocks:
+          ''' + "\n\n".join(blocks)
           else:
-              ai_message = """
-          Return only the following HTML.
-
-          Do not return Markdown.
-          Do not use code fences.
-          Do not include any other text.
-
-          <html>
-          <body style="font-family:Arial,sans-serif;">
+              ai_message = '''
+          Return only this HTML and nothing else:
+          <html><body style="font-family:Arial,sans-serif;">
           <p style="font-size:18px;"><strong>No New</strong></p>
-          </body>
-          </html>
-          """
-
-
-          print("")
-          print(
-              "PDFs downloaded/read:",
-              pdf_count
-          )
-
-          print(
-              "AI input characters:",
-              len(ai_message)
-          )
-
-
-          # --------------------------------------------------
-          # CALL POWER AUTOMATE ONCE
-          # --------------------------------------------------
+          </body></html>
+          '''
 
           response = requests.post(
               POWER_AUTOMATE_URL,
               json={
                   "subject": EMAIL_SUBJECT,
-                  "message": ai_message
+                  "message": ai_message,
+                  "status": "NEW_UPLOADS" if new_records else "NO_NEW"
               },
               timeout=600
           )
+          print("Power Automate status:", response.status_code)
+          print("AI response preview:", response.text[:1500])
+          if response.status_code not in (200, 202):
+              raise RuntimeError("Power Automate AI request failed.")
 
-          print(
-              "Power Automate status:",
-              response.status_code
-          )
+          processed_ids = {record["gazette_number"] for record in new_records}
+          seen_ids.update(processed_ids)
+          save_seen(seen_ids)
 
-          print(
-              "AI response preview:",
-              response.text[:1500]
-          )
-
-          if response.status_code not in (
-              200,
-              202
-          ):
-              raise RuntimeError(
-                  "Power Automate AI request failed."
-              )
-
-
-          # --------------------------------------------------
-          # UPDATE PROCESSED IDS AFTER SUCCESS
-          # --------------------------------------------------
-
-          processed_ids = {
-              record["gazette_number"]
-              for record in new_records
-          }
-
-          seen_ids.update(
-              processed_ids
-          )
-
-          save_seen(
-              seen_ids
-          )
-
-          print("")
-          print("======================================")
           print("INTELLIGENT EGAZETTE RUN COMPLETE")
-          print("======================================")
-          print(
-              "New Gazette records:",
-              len(new_records)
-          )
-          print(
-              "PDFs downloaded/read:",
-              pdf_count
-          )
-          print(
-              "Power Automate status:",
-              response.status_code
-          )
-          print(
-              "Processed IDs saved:",
-              len(processed_ids)
-          )
-          print("======================================")
+          print("New Gazette records:", len(new_records))
+          print("PDFs downloaded/read:", pdf_count)
+          print("Processed IDs saved:", len(processed_ids))
           PY
 
       - name: Save processed Gazette IDs
@@ -1114,11 +485,13 @@ jobs:
           git diff --cached --quiet || git commit -m "Update intelligent eGazette IDs"
           git push
 
-      - name: Upload test PDFs
+      - name: Upload diagnostics and PDFs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: eGazette-Intelligent-Test-PDFs
-          path: downloaded_gazettes/
+          name: eGazette-Intelligent-Test-Files
+          path: |
+            downloaded_gazettes/
+            diagnostic_files/
           retention-days: 3
           if-no-files-found: ignore
