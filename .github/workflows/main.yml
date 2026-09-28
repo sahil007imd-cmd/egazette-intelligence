@@ -317,7 +317,7 @@ jobs:
           analyses = []
           for record in new_records:
               if "relevance" not in record:
-                  instruction = block(record) + "\n\nANALYSIS INSTRUCTION:\nAnalyse this single Gazette for MSIL. Return only:\nRELEVANCE: Relevant or Not Relevant\nSUMMARY: Concise business impact, MSIL implication and one short accurate Gazette excerpt."
+                  instruction = block(record) + "\n\nANALYSIS INSTRUCTION:\nAnalyse this Gazette from the perspective of Maruti Suzuki India Limited (MSIL).\n\nIf the Gazette is Relevant, the SUMMARY must contain:\n1. What changed\n2. Why it matters to the automobile industry\n3. Potential MSIL impact\n4. One key Gazette extract quoted accurately from the notification\n\nKeep the summary concise, with a maximum of 4 to 5 short lines.\n\nIf the Gazette is Not Relevant, write exactly:\nNo material impact on MSIL identified.\n\nReturn only in this exact plain-text format:\nRELEVANCE: Relevant or Not Relevant\nSUMMARY: The required summary text."
                   response = requests.post(AI_URL, json={"subject": SUBJECT,"message": instruction,"mode":"ANALYZE"}, timeout=600)
                   print("AI status", record["gazette_number"], response.status_code)
                   if response.status_code not in (200, 202):
