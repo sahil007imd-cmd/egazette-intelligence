@@ -115,16 +115,41 @@ jobs:
               STATE.write_text(json.dumps(sorted(values), indent=2), encoding="utf-8")
 
           def screen(record):
-              text = clean(record["ministry"] + " " + record["department"] + " " + record["title"]).lower()
+              text = clean(
+                  record["ministry"] + " "
+                  + record["department"] + " "
+                  + record["title"]
+              ).lower()
+
+              routine_patterns = [
+                  r"\bsection\s*3\s*a\b",
+                  r"\bsection\s*3\s*d\b",
+                  r"\bsection\s*20\s*a\b",
+                  r"\bsection\s*20\s*e\b",
+                  r"\bclause\s*20\s*e\b",
+                  r"\b20\s*e\s+notification\b",
+                  r"\bland acquisition\b",
+                  r"\bacquisition of land\b",
+                  r"\bcompetent authority for land acquisition\b",
+                  r"\btoll plaza\b",
+                  r"\buser fee notification\b",
+              ]
+
+              # Routine land, toll and acquisition notifications always remain No.
+              if any(re.search(pattern, text, re.I) for pattern in routine_patterns):
+                  return False, "Routine land/toll notification"
+
+              # Stakeholder movements are relevant only in the listed MSIL bodies.
               if any_in(text, official_terms) and any_in(text, important_bodies):
                   return True, "Official change in relevant ministry"
-              subject_match = any_in(text, terms)
-              if any_in(text, exclusions) and not subject_match:
-                  return False, "Routine land/toll notification"
-              if subject_match:
+
+              if any_in(text, terms):
                   return True, "Automotive policy keyword match"
+
+              # Ministry alone only triggers PDF/AI review, not final relevance.
               if any_in(text, ministries):
                   return True, "Relevant ministry review"
+
               return False, "No preliminary automotive relevance"
 
           def parse_records(page):
@@ -260,14 +285,48 @@ jobs:
 
           def parse_ai(raw):
               raw = str(raw or "").strip()
-              match = re.search(r"RELEVANCE\s*:\s*(Not Relevant|Relevant)", raw, re.I)
-              relevance = match.group(1).title() if match else ("Not Relevant" if re.search(r"\bnot relevant\b", raw, re.I) else "Relevant")
-              match = re.search(r"SUMMARY\s*:\s*(.*?)(?:KEY EXTRACTS|KEY IMPACT|EFFECTIVE DATE|KEY CHANGE|$)", raw, re.I | re.S)
-              summary = clean(match.group(1) if match else re.sub(r"<[^>]+>", " ", raw))
+
+              summary_match = re.search(
+                  r"SUMMARY\s*:\s*(.*?)(?:KEY EXTRACTS|KEY IMPACT|EFFECTIVE DATE|KEY CHANGE|$)",
+                  raw,
+                  re.I | re.S,
+              )
+              summary = clean(
+                  summary_match.group(1)
+                  if summary_match
+                  else re.sub(r"<[^>]+>", " ", raw)
+              )
+
+              relevance_match = re.search(
+                  r"RELEVANCE\s*:\s*(Not Relevant|Relevant)",
+                  raw,
+                  re.I,
+              )
+              no_impact = re.search(
+                  r"no material impact on MSIL identified",
+                  raw,
+                  re.I,
+              )
+
+              if no_impact:
+                  relevance = "Not Relevant"
+                  summary = "No material impact on MSIL identified."
+              elif relevance_match:
+                  relevance = relevance_match.group(1).title()
+              elif summary:
+                  # A substantive summary without a relevance label is treated as Relevant.
+                  relevance = "Relevant"
+              else:
+                  # Never default a blank or malformed AI response to Relevant.
+                  relevance = "Not Relevant"
+                  summary = "No material impact on MSIL identified."
+
               if relevance == "Not Relevant":
                   summary = "No material impact on MSIL identified."
               elif not summary:
-                  summary = "Relevant notification identified for MSIL review."
+                  relevance = "Not Relevant"
+                  summary = "No material impact on MSIL identified."
+
               return relevance, summary[:1200]
 
           seen = load_seen()
