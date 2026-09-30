@@ -50,8 +50,16 @@ jobs:
           PDF_DIR = Path("downloaded_gazettes")
           DIAG_DIR = Path("diagnostic_files")
           SUBJECT = "eGazette Hourly Intelligence"
-          MAX_PDFS = 6
+          MAX_PDFS = 20
           MAX_TEXT = 12000
+          STRONG_AUTO_TERMS = [
+              "corporate average fuel economy", "cafe", "fuel economy",
+              "m1 category", "m2 category", "m3 category",
+              "motor vehicle", "cmvr", "automotive industry standard",
+              "ais ", "bharat ncap", "adas", "vehicle safety",
+              "type approval", "vehicle certification", "emission norm",
+              "bharat stage", "bs vi", "bs6"
+          ]
           AI_URL = os.environ.get("POWER_AUTOMATE_URL", "").strip()
           EMAIL_URL = os.environ.get("FINAL_EMAIL_URL", "").strip()
           if not AI_URL or not EMAIL_URL:
@@ -135,18 +143,23 @@ jobs:
                   r"\buser fee notification\b",
               ]
 
-              # Routine land, toll and acquisition notifications always remain No.
+              # Strong automotive rules always take priority.
+              if any_in(text, STRONG_AUTO_TERMS):
+                  return True, "High-priority automotive regulation"
+
+              # Routine acquisition/toll matters remain non-relevant.
               if any(re.search(pattern, text, re.I) for pattern in routine_patterns):
                   return False, "Routine land/toll notification"
 
-              # Stakeholder movements are relevant only in the listed MSIL bodies.
+              # Stakeholder movements are relevant only in MSIL-relevant bodies.
               if any_in(text, official_terms) and any_in(text, important_bodies):
                   return True, "Official change in relevant ministry"
 
               if any_in(text, terms):
                   return True, "Automotive policy keyword match"
 
-              # Ministry alone only triggers PDF/AI review, not final relevance.
+              # Relevant ministries are sent for PDF/AI review, but ministry alone
+              # does not decide final relevance.
               if any_in(text, ministries):
                   return True, "Relevant ministry review"
 
@@ -309,25 +322,23 @@ jobs:
               )
 
               if no_impact:
-                  relevance = "Not Relevant"
-                  summary = "No material impact on MSIL identified."
-              elif relevance_match:
+                  return "Not Relevant", "No material impact on MSIL identified."
+
+              if relevance_match:
                   relevance = relevance_match.group(1).title()
-              elif summary:
-                  # A substantive summary without a relevance label is treated as Relevant.
+              elif summary and len(summary) >= 40:
                   relevance = "Relevant"
               else:
-                  # Never default a blank or malformed AI response to Relevant.
-                  relevance = "Not Relevant"
-                  summary = "No material impact on MSIL identified."
+                  # Malformed/blank output must never become a false Yes.
+                  return "Pending Review", "AI analysis was inconclusive. Manual review required."
 
               if relevance == "Not Relevant":
-                  summary = "No material impact on MSIL identified."
-              elif not summary:
-                  relevance = "Not Relevant"
-                  summary = "No material impact on MSIL identified."
+                  return "Not Relevant", "No material impact on MSIL identified."
 
-              return relevance, summary[:1200]
+              if not summary or summary.lower().startswith("relevant notification identified"):
+                  return "Pending Review", "AI analysis was inconclusive. Manual review required."
+
+              return "Relevant", summary[:1600]
 
           seen = load_seen()
           pdf_count = 0
@@ -349,34 +360,68 @@ jobs:
               new_records = [r for r in records if r["gazette_number"] not in seen]
               print("New records:", len(new_records))
 
-              for record in new_records:
+              # Process high-priority automotive records first, while preserving
+              # original upload order later in the email table.
+              processing_records = sorted(
+                  new_records,
+                  key=lambda r: (
+                      0 if any_in(
+                          clean(r["ministry"] + " " + r["department"] + " " + r["title"]).lower(),
+                          STRONG_AUTO_TERMS,
+                      ) else 1,
+                      r["row_index"],
+                  ),
+              )
+
+              for record in processing_records:
                   needs_pdf, reason = screen(record)
                   record["screen_reason"] = reason
                   record["pdf_text"] = ""
+
                   if not needs_pdf:
                       record["relevance"] = "Not Relevant"
                       record["summary"] = "No material impact on MSIL identified."
                       continue
+
+                  # A capacity limit or download failure must never mean Not Relevant.
+                  # The item will still go to AI using title/ministry metadata.
                   if pdf_count >= MAX_PDFS:
-                      record["relevance"] = "Not Relevant"
-                      record["summary"] = "No material impact on MSIL identified."
+                      record["screen_reason"] += "; PDF capacity reached - metadata AI review"
                       continue
+
                   rows = page.locator("table tr")
                   if record["row_index"] >= rows.count():
+                      record["screen_reason"] += "; Gazette row unavailable - metadata AI review"
                       continue
-                  button = rows.nth(record["row_index"]).locator('input[name*="imgbtndownload"]')
-                  if button.count():
-                      path = download_pdf(page, context, button.first, record["gazette_number"])
-                      if path:
-                          record["pdf_text"] = pdf_text(path)
-                          if record["pdf_text"]:
-                              pdf_count += 1
+
+                  button = rows.nth(record["row_index"]).locator(
+                      'input[name*="imgbtndownload"]'
+                  )
+                  if not button.count():
+                      record["screen_reason"] += "; PDF button unavailable - metadata AI review"
+                      continue
+
+                  path = download_pdf(
+                      page,
+                      context,
+                      button.first,
+                      record["gazette_number"],
+                  )
+                  if path:
+                      record["pdf_text"] = pdf_text(path)
+                      if record["pdf_text"]:
+                          pdf_count += 1
+                      else:
+                          record["screen_reason"] += "; PDF text unavailable - metadata AI review"
+                  else:
+                      record["screen_reason"] += "; PDF download failed - metadata AI review"
+
               browser.close()
 
           analyses = []
           for record in new_records:
               if "relevance" not in record:
-                  instruction = block(record) + "\n\nANALYSIS INSTRUCTION:\nAnalyse this Gazette from the perspective of Maruti Suzuki India Limited (MSIL).\n\nIf the Gazette is Relevant, the SUMMARY must contain:\n1. What changed\n2. Why it matters to the automobile industry\n3. Potential MSIL impact\n4. One key Gazette extract quoted accurately from the notification\n\nKeep the summary concise, with a maximum of 4 to 5 short lines.\n\nIf the Gazette is Not Relevant, write exactly:\nNo material impact on MSIL identified.\n\nReturn only in this exact plain-text format:\nRELEVANCE: Relevant or Not Relevant\nSUMMARY: The required summary text."
+                  instruction = block(record) + "\n\nANALYSIS INSTRUCTION:\nAnalyse this Gazette from the perspective of Maruti Suzuki India Limited (MSIL).\nDirect automotive regulations including CAFÉ, fuel economy, M1 category motor vehicles, CMVR, AIS, emissions, vehicle safety, type approval and certification are always Relevant.\nRoutine Section 3A, 3D, 20A, 20E, land acquisition, toll and user-fee notifications are Not Relevant.\n\nIf Relevant, write a curated 4 to 5 sentence SUMMARY covering: what changed; applicability/timeline; automobile-industry significance; specific MSIL implication/action; and one short accurate Gazette quote. Do not use generic wording.\nIf Not Relevant, write exactly: No material impact on MSIL identified.\n\nReturn only this exact plain-text format:\nRELEVANCE: Relevant or Not Relevant\nSUMMARY: <curated summary>"
                   response = requests.post(AI_URL, json={"subject": SUBJECT,"message": instruction,"mode":"ANALYZE"}, timeout=600)
                   print("AI status", record["gazette_number"], response.status_code)
                   if response.status_code not in (200, 202):
@@ -392,10 +437,12 @@ jobs:
               rows_html = []
               for item in analyses:
                   yes = item["relevance"] == "Relevant"
-                  colour = "#E2F0D9" if yes else "#E7E6E6"
+                  pending = item["relevance"] == "Pending Review"
+                  colour = "#E2F0D9" if yes else ("#FFF2CC" if pending else "#E7E6E6")
+                  relevant_text = "Yes" if yes else ("Pending Review" if pending else "No")
                   rows_html.append(
                       f'<tr style="background-color:{colour};">'
-                      f'<td style="{cell}">{"Yes" if yes else "No"}</td>'
+                      f'<td style="{cell}">{relevant_text}</td>'
                       f'<td style="{cell}">{html.escape(item["gazette_number"])}</td>'
                       f'<td style="{cell}">{html.escape(item["ministry"])}</td>'
                       f'<td style="{cell}">{html.escape(item["title"])}</td>'
