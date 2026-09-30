@@ -51,7 +51,7 @@ jobs:
           DIAG_DIR = Path("diagnostic_files")
           SUBJECT = "eGazette Hourly Intelligence"
           MAX_TEXT = 12000
-          MAX_LIST_PAGES = 5
+          MAX_LIST_PAGES = 3
 
           # Direct policy signals: final Relevant decision, AI creates summary only.
           DIRECT_AUTO_TERMS = [
