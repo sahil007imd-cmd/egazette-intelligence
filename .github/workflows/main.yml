@@ -15,7 +15,7 @@ concurrency:
 jobs:
   monitor:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 60
 
     steps:
       - name: Checkout repository
@@ -50,15 +50,35 @@ jobs:
           PDF_DIR = Path("downloaded_gazettes")
           DIAG_DIR = Path("diagnostic_files")
           SUBJECT = "eGazette Hourly Intelligence"
-          MAX_PDFS = 20
           MAX_TEXT = 12000
-          STRONG_AUTO_TERMS = [
-              "corporate average fuel economy", "cafe", "fuel economy",
-              "m1 category", "m2 category", "m3 category",
-              "motor vehicle", "cmvr", "automotive industry standard",
-              "ais ", "bharat ncap", "adas", "vehicle safety",
-              "type approval", "vehicle certification", "emission norm",
-              "bharat stage", "bs vi", "bs6"
+
+          # Direct policy signals: final Relevant decision, AI creates summary only.
+          DIRECT_AUTO_TERMS = [
+              "corporate average fuel economy", "cafe norm", "cafe standard",
+              "fuel economy norm", "fuel economy standard", "energy consumption standard",
+              "m1 category motor vehicle", "m1 category vehicle",
+              "m2 category motor vehicle", "m3 category motor vehicle",
+              "central motor vehicle rules", "cmvr", "automotive industry standard",
+              "bharat ncap", "vehicle safety standard", "type approval",
+              "vehicle certification", "vehicle homologation", "vehicle emission norm",
+              "bharat stage", "bs vi", "bs6", "electric vehicle",
+              "electric mobility", "battery swapping", "vehicle scrappage",
+              "end of life vehicle", "automobile industry", "automotive industry",
+              "passenger vehicle", "light commercial vehicle"
+          ]
+
+          # Strategic themes: PDF and AI review required; never automatic No.
+          STRATEGIC_REVIEW_TERMS = [
+              "compressed biogas", "bio-cng", "cbg", "satat",
+              "fermented organic manure", "liquid fermented organic manure",
+              "fom", "lfom", "ethanol", "flex fuel", "green hydrogen",
+              "hydrogen mobility", "charging infrastructure", "advanced chemistry cell",
+              "automotive battery", "auto component", "semiconductor",
+              "production linked incentive", "pli scheme", "customs duty",
+              "anti-dumping", "countervailing duty", "safeguard duty",
+              "foreign trade policy", "free trade agreement", "quality control order",
+              "bis standard", "carbon credit", "carbon market",
+              "renewable purchase obligation"
           ]
           AI_URL = os.environ.get("POWER_AUTOMATE_URL", "").strip()
           EMAIL_URL = os.environ.get("FINAL_EMAIL_URL", "").strip()
@@ -130,40 +150,35 @@ jobs:
               ).lower()
 
               routine_patterns = [
-                  r"\bsection\s*3\s*a\b",
-                  r"\bsection\s*3\s*d\b",
-                  r"\bsection\s*20\s*a\b",
-                  r"\bsection\s*20\s*e\b",
-                  r"\bclause\s*20\s*e\b",
-                  r"\b20\s*e\s+notification\b",
-                  r"\bland acquisition\b",
-                  r"\bacquisition of land\b",
+                  r"\bsection\s*3\s*a\b", r"\bsection\s*3\s*d\b",
+                  r"\bsection\s*20\s*a\b", r"\bsection\s*20\s*e\b",
+                  r"\bclause\s*20\s*e\b", r"\b20\s*e\s+notification\b",
+                  r"\bland acquisition\b", r"\bacquisition of land\b",
                   r"\bcompetent authority for land acquisition\b",
-                  r"\btoll plaza\b",
-                  r"\buser fee notification\b",
+                  r"\btoll plaza\b", r"\buser fee notification\b",
+                  r"\broad over bridge\b"
               ]
 
-              # Strong automotive rules always take priority.
-              if any_in(text, STRONG_AUTO_TERMS):
-                  return True, "High-priority automotive regulation"
+              direct_matches = [term for term in DIRECT_AUTO_TERMS if term in text]
+              if direct_matches:
+                  return "DIRECT_RELEVANT", "Direct automotive match: " + ", ".join(direct_matches[:3])
 
-              # Routine acquisition/toll matters remain non-relevant.
               if any(re.search(pattern, text, re.I) for pattern in routine_patterns):
-                  return False, "Routine land/toll notification"
+                  return "EXCLUDED", "Routine land/toll notification"
 
-              # Stakeholder movements are relevant only in MSIL-relevant bodies.
               if any_in(text, official_terms) and any_in(text, important_bodies):
-                  return True, "Official change in relevant ministry"
+                  return "DIRECT_RELEVANT", "Official change in relevant ministry/agency"
+
+              strategic_matches = [term for term in STRATEGIC_REVIEW_TERMS if term in text]
+              if strategic_matches:
+                  return "AI_REVIEW", "Strategic policy match: " + ", ".join(strategic_matches[:3])
 
               if any_in(text, terms):
-                  return True, "Automotive policy keyword match"
-
-              # Relevant ministries are sent for PDF/AI review, but ministry alone
-              # does not decide final relevance.
+                  return "AI_REVIEW", "Automotive/business keyword candidate"
               if any_in(text, ministries):
-                  return True, "Relevant ministry review"
+                  return "AI_REVIEW", "Relevant ministry candidate"
 
-              return False, "No preliminary automotive relevance"
+              return "EXCLUDED", "No preliminary automotive relevance"
 
           def parse_records(page):
               output = []
@@ -298,47 +313,27 @@ jobs:
 
           def parse_ai(raw):
               raw = str(raw or "").strip()
-
+              relevance_match = re.search(
+                  r"RELEVANCE\s*:\s*(Not Relevant|Relevant)", raw, re.I
+              )
               summary_match = re.search(
                   r"SUMMARY\s*:\s*(.*?)(?:KEY EXTRACTS|KEY IMPACT|EFFECTIVE DATE|KEY CHANGE|$)",
-                  raw,
-                  re.I | re.S,
+                  raw, re.I | re.S
               )
               summary = clean(
-                  summary_match.group(1)
-                  if summary_match
+                  summary_match.group(1) if summary_match
                   else re.sub(r"<[^>]+>", " ", raw)
               )
-
-              relevance_match = re.search(
-                  r"RELEVANCE\s*:\s*(Not Relevant|Relevant)",
-                  raw,
-                  re.I,
-              )
-              no_impact = re.search(
-                  r"no material impact on MSIL identified",
-                  raw,
-                  re.I,
-              )
-
-              if no_impact:
+              if re.search(r"no material impact on MSIL identified", raw, re.I):
                   return "Not Relevant", "No material impact on MSIL identified."
-
-              if relevance_match:
-                  relevance = relevance_match.group(1).title()
-              elif summary and len(summary) >= 40:
-                  relevance = "Relevant"
-              else:
-                  # Malformed/blank output must never become a false Yes.
-                  return "Pending Review", "AI analysis was inconclusive. Manual review required."
-
+              if not relevance_match:
+                  return "Pending Review", "AI response was inconclusive. Manual review required."
+              relevance = relevance_match.group(1).title()
               if relevance == "Not Relevant":
                   return "Not Relevant", "No material impact on MSIL identified."
-
-              if not summary or summary.lower().startswith("relevant notification identified"):
-                  return "Pending Review", "AI analysis was inconclusive. Manual review required."
-
-              return "Relevant", summary[:1600]
+              if len(summary) < 60 or summary.lower().startswith("relevant notification identified"):
+                  return "Pending Review", "AI summary was inconclusive. Manual review required."
+              return "Relevant", summary[:1800]
 
           seen = load_seen()
           pdf_count = 0
@@ -360,73 +355,83 @@ jobs:
               new_records = [r for r in records if r["gazette_number"] not in seen]
               print("New records:", len(new_records))
 
-              # Process high-priority automotive records first, while preserving
-              # original upload order later in the email table.
               processing_records = sorted(
                   new_records,
                   key=lambda r: (
-                      0 if any_in(
-                          clean(r["ministry"] + " " + r["department"] + " " + r["title"]).lower(),
-                          STRONG_AUTO_TERMS,
-                      ) else 1,
-                      r["row_index"],
-                  ),
+                      0 if screen(r)[0] == "DIRECT_RELEVANT" else
+                      1 if screen(r)[0] == "AI_REVIEW" else 2,
+                      r["row_index"]
+                  )
               )
 
               for record in processing_records:
-                  needs_pdf, reason = screen(record)
+                  decision, reason = screen(record)
+                  record["screen_decision"] = decision
                   record["screen_reason"] = reason
                   record["pdf_text"] = ""
 
-                  if not needs_pdf:
+                  if decision == "EXCLUDED":
                       record["relevance"] = "Not Relevant"
                       record["summary"] = "No material impact on MSIL identified."
                       continue
 
-                  # A capacity limit or download failure must never mean Not Relevant.
-                  # The item will still go to AI using title/ministry metadata.
-                  if pdf_count >= MAX_PDFS:
-                      record["screen_reason"] += "; PDF capacity reached - metadata AI review"
-                      continue
-
                   rows = page.locator("table tr")
                   if record["row_index"] >= rows.count():
-                      record["screen_reason"] += "; Gazette row unavailable - metadata AI review"
+                      record["screen_reason"] += "; row unavailable"
                       continue
-
                   button = rows.nth(record["row_index"]).locator(
                       'input[name*="imgbtndownload"]'
                   )
                   if not button.count():
-                      record["screen_reason"] += "; PDF button unavailable - metadata AI review"
+                      record["screen_reason"] += "; PDF button unavailable"
                       continue
-
-                  path = download_pdf(
-                      page,
-                      context,
-                      button.first,
-                      record["gazette_number"],
-                  )
+                  path = download_pdf(page, context, button.first, record["gazette_number"])
                   if path:
                       record["pdf_text"] = pdf_text(path)
                       if record["pdf_text"]:
                           pdf_count += 1
                       else:
-                          record["screen_reason"] += "; PDF text unavailable - metadata AI review"
+                          record["screen_reason"] += "; PDF text unavailable"
                   else:
-                      record["screen_reason"] += "; PDF download failed - metadata AI review"
+                      record["screen_reason"] += "; PDF download failed"
 
               browser.close()
 
           analyses = []
           for record in new_records:
-              if "relevance" not in record:
-                  instruction = block(record) + "\n\nANALYSIS INSTRUCTION:\nAnalyse this Gazette from the perspective of Maruti Suzuki India Limited (MSIL).\nDirect automotive regulations including CAFÉ, fuel economy, M1 category motor vehicles, CMVR, AIS, emissions, vehicle safety, type approval and certification are always Relevant.\nRoutine Section 3A, 3D, 20A, 20E, land acquisition, toll and user-fee notifications are Not Relevant.\n\nIf Relevant, write a curated 4 to 5 sentence SUMMARY covering: what changed; applicability/timeline; automobile-industry significance; specific MSIL implication/action; and one short accurate Gazette quote. Do not use generic wording.\nIf Not Relevant, write exactly: No material impact on MSIL identified.\n\nReturn only this exact plain-text format:\nRELEVANCE: Relevant or Not Relevant\nSUMMARY: <curated summary>"
-                  response = requests.post(AI_URL, json={"subject": SUBJECT,"message": instruction,"mode":"ANALYZE"}, timeout=600)
-                  print("AI status", record["gazette_number"], response.status_code)
-                  if response.status_code not in (200, 202):
-                      raise RuntimeError("AI analysis failed for " + record["gazette_number"])
-                  record["relevance"], record["summary"] = parse_ai(response.text)
+              if "relevance" in record:
+                  analyses.append(record)
+                  continue
+
+              direct = record.get("screen_decision") == "DIRECT_RELEVANT"
+              if direct:
+                  instruction = block(record) + "\n\nSUMMARY TASK:\nThis Gazette is deterministically Relevant to MSIL because of direct automotive evidence in the ministry/title. Do not reassess or reject relevance. Return only:\nRELEVANCE: Relevant\nSUMMARY: 4 to 5 concise sentences covering what changed; applicability/effective date; automobile-industry significance; specific MSIL implication/compliance action; and one short accurate Gazette quote. Never write No material impact."
+              else:
+                  instruction = block(record) + "\n\nANALYSIS TASK:\nAssess this Gazette for MSIL. Routine 3A, 3D, 20A, 20E, land, toll and user-fee matters are Not Relevant. Trade, fuels, CBG, EV, emissions, safety, standards, components, manufacturing, environment affecting plants, and relevant official movements may be Relevant. Return only:\nRELEVANCE: Relevant or Not Relevant\nSUMMARY: If Relevant, write 4 to 5 concise sentences covering what changed, applicability/timeline, automotive relevance, MSIL implication/action, and one accurate quote. If Not Relevant, write exactly No material impact on MSIL identified."
+
+              response = requests.post(
+                  AI_URL,
+                  json={"subject": SUBJECT, "message": instruction, "mode": "ANALYZE"},
+                  timeout=600
+              )
+              print("AI status", record["gazette_number"], response.status_code)
+              if response.status_code not in (200, 202):
+                  record["relevance"] = "Pending Review"
+                  record["summary"] = "AI service failed. Manual review required."
+              else:
+                  ai_relevance, ai_summary = parse_ai(response.text)
+                  if direct:
+                      record["relevance"] = "Relevant"
+                      if ai_relevance == "Relevant" and "Manual review" not in ai_summary:
+                          record["summary"] = ai_summary
+                      else:
+                          record["summary"] = (
+                              "Direct automotive regulation identified from the Gazette title. "
+                              "Detailed AI summary was inconclusive; immediate manual review is required."
+                          )
+                  else:
+                      record["relevance"] = ai_relevance
+                      record["summary"] = ai_summary
               analyses.append(record)
 
           if not new_records:
