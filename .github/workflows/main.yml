@@ -79,10 +79,10 @@ jobs:
               "anti-dumping", "countervailing duty", "safeguard duty",
               "foreign trade policy", "free trade agreement", "quality control order",
               "bis standard", "carbon credit", "carbon market",
-              "renewable purchase obligation"
-              "tyres", "insoluble sulphur", "carbon black", "natural/synthetic rubber"
-              "battery materials", "automotive steel", "aluminium", "copper", "lithium"
-              "rare-earth magnets"
+              "renewable purchase obligation",
+              "tyres", "insoluble sulphur", "carbon black", "natural/synthetic rubber",
+              "battery materials", "automotive steel", "aluminium", "copper", "lithium",
+              "rare-earth magnets",
           ]
           AI_URL = os.environ.get("POWER_AUTOMATE_URL", "").strip()
           EMAIL_URL = os.environ.get("FINAL_EMAIL_URL", "").strip()
