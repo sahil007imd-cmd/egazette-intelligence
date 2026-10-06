@@ -604,13 +604,58 @@ jobs:
                   pending = item["relevance"] == "Pending Review"
                   colour = "#E2F0D9" if yes else ("#FFF2CC" if pending else "#E7E6E6")
                   relevant_text = "Yes" if yes else ("Pending Review" if pending else "No")
+
+                  raw_summary = clean(item["summary"])
+                  summary_match = re.search(
+                      r"(?is)\bSummary:\s*(.*?)(?=\bMSIL Impact:|\bKey Gazette Extract:|$)",
+                      raw_summary,
+                  )
+                  impact_match = re.search(
+                      r"(?is)\bMSIL Impact:\s*(.*?)(?=\bKey Gazette Extract:|$)",
+                      raw_summary,
+                  )
+                  extract_match = re.search(
+                      r"(?is)\bKey Gazette Extract:\s*(.*)$",
+                      raw_summary,
+                  )
+
+                  if summary_match or impact_match or extract_match:
+                      formatted_parts = []
+
+                      if summary_match:
+                          formatted_parts.append(
+                              "<b>Summary:</b><br>"
+                              + html.escape(clean(summary_match.group(1)))
+                          )
+
+                      if impact_match:
+                          formatted_parts.append(
+                              "<b>MSIL Impact:</b><br>"
+                              + html.escape(clean(impact_match.group(1)))
+                          )
+
+                      if extract_match:
+                          extract_text = clean(extract_match.group(1)).strip(
+                              " \"'“”"
+                          )
+                          formatted_parts.append(
+                              "<b>Key Gazette Extract:</b><br>"
+                              + "<i>&quot;"
+                              + html.escape(extract_text)
+                              + "&quot;</i>"
+                          )
+
+                      summary_html = "<br><br>".join(formatted_parts)
+                  else:
+                      summary_html = html.escape(raw_summary)
+
                   rows_html.append(
                       f'<tr style="background-color:{colour};">'
                       f'<td style="{cell}">{relevant_text}</td>'
                       f'<td style="{cell}">{html.escape(item["gazette_number"])}</td>'
                       f'<td style="{cell}">{html.escape(item["ministry"])}</td>'
                       f'<td style="{cell}width:22%;">{html.escape(item["title"])}</td>'
-                      f'<td style="{cell}width:48%;">{html.escape(item["summary"])}</td></tr>'
+                      f'<td style="{cell}width:48%;">{summary_html}</td></tr>'
                   )
               email_html = (
                   '<html><body style="font-family:Arial,sans-serif;">'
