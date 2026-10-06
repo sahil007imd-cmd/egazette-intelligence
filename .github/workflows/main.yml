@@ -258,7 +258,7 @@ jobs:
               page.goto(
                   recent_url,
                   referer=HOME,
-                  wait_until="domcontentloaded",
+                  wait_until="commit",
                   timeout=120000,
               )
               if "error.aspx" in page.url.lower():
