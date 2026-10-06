@@ -609,8 +609,8 @@ jobs:
                       f'<td style="{cell}">{relevant_text}</td>'
                       f'<td style="{cell}">{html.escape(item["gazette_number"])}</td>'
                       f'<td style="{cell}">{html.escape(item["ministry"])}</td>'
-                      f'<td style="{cell}">{html.escape(item["title"])}</td>'
-                      f'<td style="{cell}">{html.escape(item["summary"])}</td></tr>'
+                      f'<td style="{cell}width:22%;">{html.escape(item["title"])}</td>'
+                      f'<td style="{cell}width:48%;">{html.escape(item["summary"])}</td></tr>'
                   )
               email_html = (
                   '<html><body style="font-family:Arial,sans-serif;">'
