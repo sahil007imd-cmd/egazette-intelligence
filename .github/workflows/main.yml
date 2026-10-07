@@ -121,7 +121,7 @@ jobs:
           important_bodies = [
               "road transport", "heavy industr", "environment", "petroleum",
               "commerce", "dpiit", "dgft", "bureau of indian standards", "bis",
-              "caqm", "niti aayog", "power", "renewable energy", "railways"
+              "caqm", "niti aayog", "power", "renewable energy"
           ]
           exclusions = [
               "section 3a", "section 3d", "section 20a", "section 20e",
@@ -152,24 +152,26 @@ jobs:
                   + record["department"] + " "
                   + record["title"]
               ).lower()
+              compact = re.sub(r"[^a-z0-9]+", "", text)
 
-              routine_patterns = [
-                  r"\bsection\s*3\s*a\b", r"\bsection\s*3\s*d\b",
-                  r"\bsection\s*20\s*a\b", r"\bsection\s*20\s*e\b",
-                  r"\bclause\s*20\s*e\b", r"\b20\s*e\s+notification\b",
-                  r"\bland acquisition\b", r"\bacquisition of land\b",
-                  r"\bcompetent authority for land acquisition\b",
-                  r"\btoll plaza\b", r"\buser fee notification\b",
-                  r"\broad over bridge\b"
+              routine_compact_terms = [
+                  "section3a", "section3d", "section20a", "section20e",
+                  "clause20e", "landacquisition", "acquisitionofland",
+                  "competentauthorityforlandacquisition", "tollplaza",
+                  "userfeenotification", "roadoverbridge"
               ]
+
+              # Routine land/toll notices must remain Not Relevant even when
+              # the eGazette title is published without spaces, e.g. section20Efor.
+              if any(term in compact for term in routine_compact_terms):
+                  return "EXCLUDED", "Routine land/toll notification"
 
               direct_matches = [term for term in DIRECT_AUTO_TERMS if term in text]
               if direct_matches:
                   return "DIRECT_RELEVANT", "Direct automotive match: " + ", ".join(direct_matches[:3])
 
-              if any(re.search(pattern, text, re.I) for pattern in routine_patterns):
-                  return "EXCLUDED", "Routine land/toll notification"
-
+              # Stakeholder changes are deterministic only in specifically
+              # relevant automotive/policy ministries and agencies.
               if any_in(text, official_terms) and any_in(text, important_bodies):
                   return "DIRECT_RELEVANT", "Official change in relevant ministry/agency"
 
@@ -382,6 +384,21 @@ jobs:
 
               return []
 
+          def find_row_by_gazette_number(page, gazette_number):
+              rows = page.locator("table tr")
+              for row_index in range(rows.count()):
+                  row = rows.nth(row_index)
+                  cells = row.locator("td")
+                  if cells.count() < 9:
+                      continue
+                  try:
+                      current_id = clean(cells.nth(8).inner_text())
+                  except Exception:
+                      current_id = ""
+                  if current_id == gazette_number:
+                      return row
+              return None
+
           def find_pdf(context, viewer, gid):
               try:
                   viewer.wait_for_load_state("domcontentloaded", timeout=120000)
@@ -534,11 +551,17 @@ jobs:
                       record["screen_reason"] += "; list page unavailable"
                       continue
 
-                  rows = page.locator("table tr")
-                  if record["row_index"] >= rows.count():
-                      record["screen_reason"] += "; row unavailable"
+                  # Re-identify the row by Gazette number after reopening the
+                  # page. Row positions can shift when fresh uploads arrive.
+                  record_row = find_row_by_gazette_number(
+                      page,
+                      record["gazette_number"],
+                  )
+                  if record_row is None:
+                      record["screen_reason"] += "; Gazette row unavailable"
                       continue
-                  button = rows.nth(record["row_index"]).locator(
+
+                  button = record_row.locator(
                       'input[name*="imgbtndownload"]'
                   )
                   if not button.count():
