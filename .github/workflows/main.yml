@@ -481,27 +481,125 @@ jobs:
 
           def parse_ai(raw):
               raw = str(raw or "").strip()
+
               relevance_match = re.search(
-                  r"RELEVANCE\s*:\s*(Not Relevant|Relevant)", raw, re.I
+                  r"RELEVANCE\s*:\s*(Not Relevant|Relevant)",
+                  raw,
+                  re.I,
               )
-              summary_match = re.search(
-                  r"SUMMARY\s*:\s*(.*?)(?:KEY EXTRACTS|KEY IMPACT|EFFECTIVE DATE|KEY CHANGE|$)",
-                  raw, re.I | re.S
-              )
-              summary = clean(
-                  summary_match.group(1) if summary_match
-                  else re.sub(r"<[^>]+>", " ", raw)
-              )
-              if re.search(r"no material impact on MSIL identified", raw, re.I):
-                  return "Not Relevant", "No material impact on MSIL identified."
+
+              if re.search(
+                  r"no material impact on MSIL identified",
+                  raw,
+                  re.I,
+              ):
+                  return (
+                      "Not Relevant",
+                      "No material impact on MSIL identified.",
+                      True,
+                  )
+
               if not relevance_match:
-                  return "Pending Review", "AI response was inconclusive. Manual review required."
+                  return (
+                      "Pending Review",
+                      "AI response did not contain a valid RELEVANCE field.",
+                      False,
+                  )
+
               relevance = relevance_match.group(1).title()
               if relevance == "Not Relevant":
-                  return "Not Relevant", "No material impact on MSIL identified."
-              if len(summary) < 60 or summary.lower().startswith("relevant notification identified"):
-                  return "Pending Review", "AI summary was inconclusive. Manual review required."
-              return "Relevant", summary[:1800]
+                  return (
+                      "Not Relevant",
+                      "No material impact on MSIL identified.",
+                      True,
+                  )
+
+              # For every Relevant response, all three sections are mandatory.
+              impact_match = re.search(
+                  r"(?im)^\s*MSIL Impact\s*:\s*",
+                  raw,
+              )
+              extract_match = re.search(
+                  r"(?im)^\s*Key Gazette Extract\s*:\s*",
+                  raw,
+              )
+              summary_matches = list(re.finditer(
+                  r"(?im)^\s*Summary\s*:\s*",
+                  raw,
+              ))
+
+              # The first SUMMARY line may be the outer output field. Use the
+              # last Summary heading appearing before MSIL Impact.
+              summary_match = None
+              if impact_match:
+                  candidates = [
+                      match for match in summary_matches
+                      if match.end() <= impact_match.start()
+                  ]
+                  if candidates:
+                      summary_match = candidates[-1]
+
+              if not summary_match or not impact_match or not extract_match:
+                  missing = []
+                  if not summary_match:
+                      missing.append("Summary")
+                  if not impact_match:
+                      missing.append("MSIL Impact")
+                  if not extract_match:
+                      missing.append("Key Gazette Extract")
+                  return (
+                      "Pending Review",
+                      "Incomplete AI response; missing: " + ", ".join(missing) + ".",
+                      False,
+                  )
+
+              if not (
+                  summary_match.end() <= impact_match.start()
+                  and impact_match.end() <= extract_match.start()
+              ):
+                  return (
+                      "Pending Review",
+                      "AI response sections were returned in the wrong order.",
+                      False,
+                  )
+
+              summary_text = clean(
+                  raw[summary_match.end():impact_match.start()]
+              )
+              impact_text = clean(
+                  raw[impact_match.end():extract_match.start()]
+              )
+              extract_text = clean(raw[extract_match.end():]).strip(
+                  " \"'“”"
+              )
+
+              # Remove accidental trailing instructions or wrapper labels.
+              extract_text = re.split(
+                  r"(?im)^\s*(?:For a Not Relevant Gazette|Return no other headings)",
+                  extract_text,
+                  maxsplit=1,
+              )[0].strip(" \"'“”")
+
+              if not summary_text or not impact_text or not extract_text:
+                  missing = []
+                  if not summary_text:
+                      missing.append("Summary")
+                  if not impact_text:
+                      missing.append("MSIL Impact")
+                  if not extract_text:
+                      missing.append("Key Gazette Extract")
+                  return (
+                      "Pending Review",
+                      "Incomplete AI response; blank: " + ", ".join(missing) + ".",
+                      False,
+                  )
+
+              normalized = (
+                  "Summary: " + summary_text
+                  + "\n\nMSIL Impact: " + impact_text
+                  + "\n\nKey Gazette Extract: \"" + extract_text + "\""
+              )
+              return "Relevant", normalized[:1800], True
 
           seen = load_seen()
           pdf_count = 0
@@ -587,33 +685,77 @@ jobs:
 
               direct = record.get("screen_decision") == "DIRECT_RELEVANT"
               if direct:
-                  instruction = block(record) + "\n\nSUMMARY TASK:\nThis Gazette is deterministically Relevant to MSIL because of direct automotive evidence in the ministry/title. Do not reassess or reject relevance. Return only:\nRELEVANCE: Relevant\nSUMMARY: 4 to 5 concise sentences covering what changed; applicability/effective date; automobile-industry significance; specific MSIL implication/compliance action; and one short accurate Gazette quote. Never write No material impact."
+                  instruction = block(record) + "\n\nSUMMARY TASK:\nThis Gazette is already confirmed Relevant to MSIL. Do not reassess relevance. Read only this Gazette and return exactly:\nRELEVANCE: Relevant\nSUMMARY:\nSummary: 1 to 2 concise sentences stating what has been notified.\nMSIL Impact: 1 to 2 concise sentences explaining why MSIL should care. Prioritise business impact over regulatory procedure.\nKey Gazette Extract: One short accurate English quotation from this Gazette.\nAll three sections are mandatory. Do not omit Summary or MSIL Impact."
               else:
-                  instruction = block(record) + "\n\nANALYSIS TASK:\nAssess this Gazette for MSIL. Routine 3A, 3D, 20A, 20E, land, toll and user-fee matters are Not Relevant. Trade, fuels, CBG, EV, emissions, safety, standards, components, manufacturing, environment affecting plants, and relevant official movements may be Relevant. Return only:\nRELEVANCE: Relevant or Not Relevant\nSUMMARY: If Relevant, write 4 to 5 concise sentences covering what changed, applicability/timeline, automotive relevance, MSIL implication/action, and one accurate quote. If Not Relevant, write exactly No material impact on MSIL identified."
+                  instruction = block(record) + "\n\nANALYSIS TASK:\nAssess only this Gazette for MSIL. Routine 3A, 3D, 20A, 20E, land, toll and user-fee matters are Not Relevant. Trade, fuels, CBG, EV, emissions, safety, standards, automotive components, manufacturing, plant environment and relevant official movements may be Relevant only where an automotive or MSIL connection is established. Return exactly one of the following formats.\nIf Relevant:\nRELEVANCE: Relevant\nSUMMARY:\nSummary: 1 to 2 concise sentences stating what has been notified.\nMSIL Impact: 1 to 2 concise sentences explaining why MSIL should care. Prioritise business impact over regulatory procedure.\nKey Gazette Extract: One short accurate English quotation from this Gazette.\nIf Not Relevant:\nRELEVANCE: Not Relevant\nSUMMARY: No material impact on MSIL identified.\nFor Relevant output, all three sections are mandatory."
 
               response = requests.post(
                   AI_URL,
-                  json={"subject": SUBJECT, "message": instruction, "mode": "ANALYZE"},
-                  timeout=600
+                  json={
+                      "subject": SUBJECT,
+                      "message": instruction,
+                      "mode": "ANALYZE",
+                  },
+                  timeout=600,
               )
-              print("AI status", record["gazette_number"], response.status_code)
+              print(
+                  "AI status",
+                  record["gazette_number"],
+                  response.status_code,
+              )
+
               if response.status_code not in (200, 202):
                   record["relevance"] = "Pending Review"
                   record["summary"] = "AI service failed. Manual review required."
+                  analyses.append(record)
+                  continue
+
+              ai_relevance, ai_summary, complete = parse_ai(response.text)
+
+              # Automatically retry once when a Relevant response is malformed
+              # or any mandatory section is absent/blank.
+              if not complete:
+                  print(
+                      "AI response incomplete; retrying",
+                      record["gazette_number"],
+                      ai_summary,
+                  )
+                  correction = instruction + "\n\nCORRECTION TASK:\nYour previous response was incomplete or malformed. Return the full answer again. For Relevant output, Summary, MSIL Impact and Key Gazette Extract must all be present, non-empty and in that exact order. Do not return only the extract."
+                  retry = requests.post(
+                      AI_URL,
+                      json={
+                          "subject": SUBJECT,
+                          "message": correction,
+                          "mode": "ANALYZE",
+                      },
+                      timeout=600,
+                  )
+                  print(
+                      "AI retry status",
+                      record["gazette_number"],
+                      retry.status_code,
+                  )
+                  if retry.status_code in (200, 202):
+                      ai_relevance, ai_summary, complete = parse_ai(
+                          retry.text
+                      )
+
+              if not complete:
+                  record["relevance"] = "Pending Review"
+                  record["summary"] = (
+                      "AI did not return complete Summary, MSIL Impact and "
+                      "Key Gazette Extract sections after retry. Manual review required."
+                  )
+              elif direct and ai_relevance == "Not Relevant":
+                  record["relevance"] = "Pending Review"
+                  record["summary"] = (
+                      "Direct automotive Gazette received a conflicting AI "
+                      "classification. Manual review required."
+                  )
               else:
-                  ai_relevance, ai_summary = parse_ai(response.text)
-                  if direct:
-                      record["relevance"] = "Relevant"
-                      if ai_relevance == "Relevant" and "Manual review" not in ai_summary:
-                          record["summary"] = ai_summary
-                      else:
-                          record["summary"] = (
-                              "Direct automotive regulation identified from the Gazette title. "
-                              "Detailed AI summary was inconclusive; immediate manual review is required."
-                          )
-                  else:
-                      record["relevance"] = ai_relevance
-                      record["summary"] = ai_summary
+                  record["relevance"] = ai_relevance
+                  record["summary"] = ai_summary
+
               analyses.append(record)
 
           if not new_records:
