@@ -4,9 +4,7 @@ on:
   workflow_dispatch:
 
   schedule:
-    # All times are UTC. Corresponding IST:
-    # 08:02, 11:02, 14:02, 17:02, 20:02 and 23:02
-    - cron: '32 2,5,8,11,14,17 * * *'
+    - cron: '30 2,5,8,11,14,17 * * *'
 
 permissions:
   contents: write
