@@ -3,9 +3,6 @@ name: eGazette Intelligent Email Test
 on:
   workflow_dispatch:
 
-  schedule:
-    - cron: '30 2,5,8,11,14,17 * * *'
-
 permissions:
   contents: write
 
@@ -185,7 +182,10 @@ jobs:
               if any_in(text, ministries):
                   return "AI_REVIEW", "Relevant ministry candidate"
 
-              return "EXCLUDED", "No preliminary automotive relevance"
+              # If metadata does not prove irrelevance, read the PDF. Broad or
+              # ambiguous subjects may contain automotive impact in schedules,
+              # annexures, standards, product lists or tariff/HS-code tables.
+              return "AI_REVIEW", "Automotive relevance cannot be safely ruled out from metadata"
 
           def parse_records(page, page_number):
               output = []
@@ -688,7 +688,7 @@ jobs:
               if direct:
                   instruction = block(record) + "\n\nSUMMARY TASK:\nThis Gazette is already confirmed Relevant to MSIL. Do not reassess relevance. Read only this Gazette and return exactly:\nRELEVANCE: Relevant\nSUMMARY:\nSummary: 1 to 2 concise sentences stating what has been notified.\nMSIL Impact: 1 to 2 concise sentences explaining why MSIL should care. Prioritise business impact over regulatory procedure.\nKey Gazette Extract: One short accurate English quotation from this Gazette.\nAll three sections are mandatory. Do not omit Summary or MSIL Impact."
               else:
-                  instruction = block(record) + "\n\nANALYSIS TASK:\nAssess only this Gazette for MSIL. Routine 3A, 3D, 20A, 20E, land, toll and user-fee matters are Not Relevant. Trade, fuels, CBG, EV, emissions, safety, standards, automotive components, manufacturing, plant environment and relevant official movements may be Relevant only where an automotive or MSIL connection is established. Return exactly one of the following formats.\nIf Relevant:\nRELEVANCE: Relevant\nSUMMARY:\nSummary: 1 to 2 concise sentences stating what has been notified.\nMSIL Impact: 1 to 2 concise sentences explaining why MSIL should care. Prioritise business impact over regulatory procedure.\nKey Gazette Extract: One short accurate English quotation from this Gazette.\nIf Not Relevant:\nRELEVANCE: Not Relevant\nSUMMARY: No material impact on MSIL identified.\nFor Relevant output, all three sections are mandatory."
+                  instruction = block(record) + "\n\nANALYSIS TASK:\nAssess only this Gazette for MSIL after reading the supplied PDF text. Routine 3A, 3D, 20A, 20E, land, toll and user-fee matters are Not Relevant. Determine relevance independently from the document, including direct or indirect impact on vehicles, auto components, batteries, tyres/rubber, steel/aluminium, electronics/semiconductors, fuels, chemicals, machinery, manufacturing, imports/exports, customs/tariffs, taxation, standards, emissions, recycling, energy or the automotive supply chain. For broad FTA, customs, tariff, DGFT, standards or multi-product notifications, inspect schedules, annexures, product descriptions and HS/ITC-HS codes. Absence of the words automobile, vehicle, car or MSIL is not a reason to mark Not Relevant. If automotive applicability cannot be safely ruled out because extracted text or schedules are incomplete, return Relevant and clearly state that detailed tariff/product-line review is required. Return exactly one of the following formats.\nIf Relevant:\nRELEVANCE: Relevant\nSUMMARY:\nSummary: 1 to 2 concise sentences stating what has been notified.\nMSIL Impact: 1 to 2 concise sentences explaining why MSIL should care. Prioritise business impact over regulatory procedure.\nKey Gazette Extract: One short accurate English quotation from this Gazette.\nIf Not Relevant:\nRELEVANCE: Not Relevant\nSUMMARY: No material impact on MSIL identified.\nFor Relevant output, all three sections are mandatory."
 
               response = requests.post(
                   AI_URL,
