@@ -602,6 +602,98 @@ jobs:
               )
               return "Relevant", normalized[:1800], True
 
+          SPECULATIVE_RELEVANCE_PHRASES = [
+              "could impact", "could indirectly impact", "may impact", "may affect",
+              "might impact", "potentially impact", "potentially affecting",
+              "possible impact", "should monitor", "monitor developments",
+              "could enable", "may enable", "future application",
+              "potential product planning", "potential compliance"
+          ]
+
+          AUTOMOTIVE_SOURCE_EVIDENCE = [
+              "motor vehicle", "motor vehicles", "vehicle-to-everything", "v2x",
+              "connected vehicle", "vehicle telematics", "automobile", "automotive",
+              "passenger vehicle", "commercial vehicle", "vehicle component",
+              "auto component", "automotive coating", "automotive paint",
+              "vehicle tyre", "vehicle tire", "automotive tyre", "automotive tire",
+              "traction battery", "vehicle battery", "electric vehicle",
+              "charging infrastructure", "bharat stage", "cmvr", "homologation",
+              "vehicle emission", "vehicle safety", "fuel economy", "cafe norm",
+              "m1 category", "m2 category", "m3 category", "n1 category",
+              "chapter 87", "heading 8701", "heading 8702", "heading 8703",
+              "heading 8704", "heading 8705", "heading 8706", "heading 8707",
+              "heading 8708", "tariff item 8701", "tariff item 8702",
+              "tariff item 8703", "tariff item 8704", "tariff item 8705",
+              "tariff item 8706", "tariff item 8707", "tariff item 8708"
+          ]
+
+          BROAD_TRADE_EVIDENCE = [
+              "customs tariff", "customs duty", "free trade agreement",
+              "rules of origin", "tariff concession", "anti-dumping",
+              "countervailing duty", "safeguard duty", "itc-hs", "hs code",
+              "tariff item", "tariff rate quota"
+          ]
+
+          def validate_relevant_claim(record, relevance, summary):
+              if relevance != "Relevant":
+                  return relevance, summary
+
+              source_text = clean(
+                  record.get("title", "") + " "
+                  + record.get("ministry", "") + " "
+                  + record.get("department", "") + " "
+                  + record.get("pdf_text", "")
+              ).lower()
+              ai_claim = clean(summary).lower()
+
+              source_has_auto_evidence = any_in(
+                  source_text,
+                  AUTOMOTIVE_SOURCE_EVIDENCE,
+              )
+              claim_is_speculative = any_in(
+                  ai_claim,
+                  SPECULATIVE_RELEVANCE_PHRASES,
+              )
+              broad_trade_case = any_in(
+                  source_text,
+                  BROAD_TRADE_EVIDENCE,
+              )
+
+              if claim_is_speculative and not source_has_auto_evidence:
+                  print(
+                      "False-positive guard changed to Not Relevant:",
+                      record["gazette_number"],
+                      "speculative AI connection without Gazette evidence",
+                  )
+                  return (
+                      "Not Relevant",
+                      "No specific automotive or MSIL connection is established in the Gazette.",
+                  )
+
+              if broad_trade_case and not source_has_auto_evidence:
+                  print(
+                      "Evidence guard changed to Pending Review:",
+                      record["gazette_number"],
+                      "broad trade case without verified automotive line",
+                  )
+                  return (
+                      "Pending Review",
+                      "Broad trade/tariff notification; automotive applicability is not established in the extracted Gazette text. Tariff-line review required.",
+                  )
+
+              if not source_has_auto_evidence:
+                  print(
+                      "False-positive guard changed to Not Relevant:",
+                      record["gazette_number"],
+                      "no automotive evidence in Gazette text",
+                  )
+                  return (
+                      "Not Relevant",
+                      "No specific automotive or MSIL connection is established in the Gazette.",
+                  )
+
+              return relevance, summary
+
           seen = load_seen()
           pdf_count = 0
 
@@ -688,7 +780,7 @@ jobs:
               if direct:
                   instruction = block(record) + "\n\nSUMMARY TASK:\nThis Gazette is already confirmed Relevant to MSIL. Do not reassess relevance. Read only this Gazette and return exactly:\nRELEVANCE: Relevant\nSUMMARY:\nSummary: 1 to 2 concise sentences stating what has been notified.\nMSIL Impact: 1 to 2 concise sentences explaining why MSIL should care. Prioritise business impact over regulatory procedure.\nKey Gazette Extract: One short accurate English quotation from this Gazette.\nAll three sections are mandatory. Do not omit Summary or MSIL Impact."
               else:
-                  instruction = block(record) + "\n\nANALYSIS TASK:\nAssess only this Gazette for MSIL after reading the supplied PDF text. Routine 3A, 3D, 20A, 20E, land, toll and user-fee matters are Not Relevant. Determine relevance independently from the document, including direct or indirect impact on vehicles, auto components, batteries, tyres/rubber, steel/aluminium, electronics/semiconductors, fuels, chemicals, machinery, manufacturing, imports/exports, customs/tariffs, taxation, standards, emissions, recycling, energy or the automotive supply chain. For broad FTA, customs, tariff, DGFT, standards or multi-product notifications, inspect schedules, annexures, product descriptions and HS/ITC-HS codes. Absence of the words automobile, vehicle, car or MSIL is not a reason to mark Not Relevant. If automotive applicability cannot be safely ruled out because extracted text or schedules are incomplete, return Relevant and clearly state that detailed tariff/product-line review is required. Return exactly one of the following formats.\nIf Relevant:\nRELEVANCE: Relevant\nSUMMARY:\nSummary: 1 to 2 concise sentences stating what has been notified.\nMSIL Impact: 1 to 2 concise sentences explaining why MSIL should care. Prioritise business impact over regulatory procedure.\nKey Gazette Extract: One short accurate English quotation from this Gazette.\nIf Not Relevant:\nRELEVANCE: Not Relevant\nSUMMARY: No material impact on MSIL identified.\nFor Relevant output, all three sections are mandatory."
+                  instruction = block(record) + "\n\nANALYSIS TASK:\nAssess only this Gazette for MSIL after reading the supplied PDF text. Routine 3A, 3D, 20A, 20E, land, toll and user-fee matters are Not Relevant. A Relevant decision requires a specific automotive or MSIL connection supported by the supplied Gazette title, PDF text, product description, applicable rule, standard, schedule, annexure, or HS/ITC-HS line. Do not invent relevance from a possible future use or from generic statements such as could impact, may affect, potentially, might, could enable, or MSIL should monitor. A cross-sector regulation is Not Relevant merely because an automobile company could theoretically use the regulated technology, material, product, or service. For broad FTA, customs, tariff, DGFT, standards, anti-dumping, or multi-product notifications, inspect the supplied schedules, annexures, product descriptions, and HS/ITC-HS codes. If the supplied text does not establish an automotive connection, return Not Relevant; the program will separately retain genuinely broad trade cases for Pending Review where necessary. Return exactly one of the following formats.\nIf Relevant:\nRELEVANCE: Relevant\nSUMMARY:\nSummary: 1 to 2 concise sentences stating what has been notified.\nMSIL Impact: 1 to 2 concise sentences explaining why MSIL should care. Prioritise business impact over regulatory procedure.\nKey Gazette Extract: One short accurate English quotation from this Gazette.\nIf Not Relevant:\nRELEVANCE: Not Relevant\nSUMMARY: No material impact on MSIL identified.\nFor Relevant output, all three sections are mandatory."
 
               response = requests.post(
                   AI_URL,
@@ -754,6 +846,11 @@ jobs:
                       "classification. Manual review required."
                   )
               else:
+                  ai_relevance, ai_summary = validate_relevant_claim(
+                      record,
+                      ai_relevance,
+                      ai_summary,
+                  )
                   record["relevance"] = ai_relevance
                   record["summary"] = ai_summary
 
